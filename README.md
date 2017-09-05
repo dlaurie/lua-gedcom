@@ -5,7 +5,8 @@ Read and surf GEDCOM files in Lua.
 
 1. Copy `gedcom.lua` and `lifelines.lua` into a directory named `gedcom` in your Lua module path.  
 2. From the directory in which you keep GEDFILE.ged, start up Lua 5.3.
-3. Type
+
+You can then try this:
 
     gedcom = require "gedcom.gedcom"
     ged, readerr = gedcom.read "GEDFILE.ged"
