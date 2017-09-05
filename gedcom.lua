@@ -277,7 +277,7 @@ _parse_date = function(data)
     item = nil
   end
   item = item or word()
-  n = _month[item]
+  n = _month[item:upper()]
   if n then
     month = n
     item = nil
@@ -318,7 +318,7 @@ local gedcom = function(filename)
     },
     GEDCOM)
   if not gedfile then return ged end
-  msg = Message()
+  msg = ged.msg 
   if gedfile then msg:append("Reading %s",filename) end
   _read(ged)
   msg:append("%s lines, %s records",ged[#ged].pos,#ged)
