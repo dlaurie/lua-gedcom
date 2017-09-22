@@ -2,42 +2,68 @@
 -- LifeLines functions on GEDCOM objects.
 
 -- See 'gedcom.lua' for the documentation of GEDCOM objects. This module
---    extends functionality by adding methods to the GEDCOM table and defining
---    INDI, FAM, EVENT and DATE tables. The documentation of the LifeLines 
---    Programming System and Report generator remains largely valid for the
---    implemented functions, except that iterators follow Lua syntax: see 
---    comments. Note that Lua does not allow expressions to be written to 
---    output automatically.
+--    extends functionality by adding methods to the GEDCOM table and 
+--    defining EVENT, BIRT, CHR, DEAT, BURI, MARR method tables. 
+-- The documentation of the LifeLines Programming System and Report 
+--    generator remains largely valid for the implemented functions, except 
+--    that iterators follow Lua syntax: see comments. Note that Lua does 
+--    not allow expressions to be written to output automatically.
 
--- GEDCOM functions: build fam firstfam firstindi forfam forindi
---    indi lastfam lastindi to_gedcom write
+-- Many LifeLines functions have been moved into `gedcom.lua` because they
+-- are so natural and so inevitable that writing code without them would be
+-- painful. If you see its name in the list but not its code below, it is 
+-- already defined the moment that 'gedcom' has been required.
+
+-- GEDCOM functions: fam firstfam firstindi forfam forindi indi lastfam 
+--       lastindi to_gedcom write
 --    These all require object-oriented calls with an object constructed
 --    by gedcom.read(FILENAME), e.g. `ged:fam"F1". Doing so, rather than
 --    making the functions global, allows the LifeLines module to support 
 --    multiple  GEDCOM files.
--- INDI functions: birth burial death families father female givens male mother
---    name nfamilies nspouses parents pn sex spousein spouses surname title
+-- INDI functions: birth burial death families father female givens male 
+--       mother name nfamilies nspouses parents pn sex spousein spouses 
+--       surname title
 -- FAM functions: children firstchild husband lastchild marriage nchildren
 --    spouses wife
 -- EVENT functions: date day month place year
--- DATE functions: day month status year
 
 -- LifeLines features that are adequately and sometimes better served in Lua 
---    are not implemented, and there is no intention ever to do so.
+--    are not implemented, and there is no intention ever to do so. These
+--    include e.g. program logic, string formatting and abstract (i.e. not
+--    tied to GEDCOM ideas) data structures.
 
 -- cache some routines as upvalues
-local tremove, tunpack, tconcat = table.remove, table.unpack, table.concat
+local  tremove,      tunpack,      tconcat,      tsort = 
+  table.remove, table.unpack, table.concat, table.sort
 local append = table.insert
+local Warning, Error = false, true
 
-local gedcom = require "gedcom"
+--- nonblank(s) is s if s is a non-blank string, otherwise nil
+local function nonblank(s)
+  if type(s)=='string' and s:match"%S" then return s end
+  return nil
+end
+
+--- don't change the line below unless you understand the difference
+--- between Lua 5.2 and Lua 5.3 'requre' and 'package'
+local gedcom = require "gedcom" or require "gedcom.gedcom"
+
 local meta = gedcom.meta
-local GEDCOM = meta.GEDCOM
+local GEDCOM, RECORD, FIELD, ITEM = 
+  meta.GEDCOM, meta.RECORD, meta.FIELD, meta.ITEM
+local Message = gedcom.util.Message
 
---- Method tables
-local INDI, FAM, EVENT, DATE = {}, {}, {}, {}
-meta.INDI, meta.FAM = INDI, FAM
-meta.BIRT, meta.MARR, meta.BURI =  EVENT, EVENT, EVENT
-meta.DATE = DATE
+--- Tag-specific method tables
+local INDI = meta.INDI
+local FAM = meta.FAM
+local DATE = meta.DATE
+local NAME = meta.NAME
+local EVENT = {}
+for s in ("EVENT,BIRT,CHR,DEAT,BURI,MARR"):gmatch"%u+" do
+  meta[s] = EVENT
+end
+
+local key_pattern = '^@(.+)@$'
 
 -- GEDCOM functions
 
@@ -63,16 +89,6 @@ GEDCOM.forfam = function(gedcom)
   end
 end
 
-GEDCOM.indi = function(gedcom,key)
-  local indi = gedcom[key]
-  if indi and indi.tag == "INDI" then return indi end
-end
-
-GEDCOM.fam = function(gedcom,key)
-  local fam = gedcom[key]
-  if fam and fam.tag == "FAM" then return fam end
-end
-
 GEDCOM.firstindi = function(gedcom)
   return gedcom._INDI[1]
 end
@@ -89,7 +105,6 @@ GEDCOM.lastfam = function(gedcom)
   return gedcom._FAM[#gedcom._FAM]
 end
 
-
 -- Person functions
 
 -- will not be implemented: key, soundex, inode, root
@@ -98,18 +113,6 @@ end
 
 -- implemented as GEDCOM functions: indi forindi firstindi lastindi
 -- implemented but not in lifelines: spousein
-
-    do
-local name_pattern = '^([^/]-)%s*/([^/]+)/%s*([^/]*)$'
-INDI.name = function(indi,capitalize)
-  local pre, surname, post = indi.NAME.data:match(name_pattern)
-  if capitalize then surname = surname:upper() end
-  local buf = {}
-  append(buf,pre); append(buf,surname); append(buf,post)
-  return tconcat(buf,' ')
-end
-    end
-
 INDI.surname = function(indi)
   return indi.NAME.data:match "/(.*)/"
 end
@@ -130,26 +133,6 @@ INDI.burial = function(indi)
   return indi.BURI
 end
 
-INDI.father = function(indi)
-  return indi:parents():husband()
-end
-
-INDI.mother = function(indi)
-  return indi:parents():wife()
-end
-
-INDI.sex = function(indi)
-  return indi.SEX.data
-end
-
-INDI.male = function(indi)
-  return indi:sex() == 'M'
-end
-
-INDI.female = function(indi)
-  return indi:sex() == 'F'
-end
-
     do
 local pronoun = {M={"He","he","His","his","him"},
                  F={"She","she","Her","her","her"}}
@@ -158,39 +141,8 @@ INDI.pn = function(indi,typ)
 end
     end
 
-INDI.parents = function(indi)
-  return indi.prev[indi.FAMC.data]
-end
-
 INDI.title = function(indi)
   return indi.TITL.data
-end
-
---- indi:spousein(fam) 
--- if indi is a parent in the family, then the other parent, if any, 
--- is returned, otherwise nothing.
-INDI.spousein = function(indi,fam)
-  local husband, wife = fam:husband(), fam:wife()
-  if indi == husband then return wife
-  elseif indi == wife then return husband
-  end
-end
-
---- for family,spouse,k in indi:families() do
-INDI.families = function(indi)
-  local k=0   -- line in INDI record
-  local n=0   -- number of family
-  return function()
-    local fam
-    repeat
-      k=k+1
-      fam = indi[k]
-    until not fam or fam.tag == "FAMS"
-    if not fam then return end
-    n = n+1
-    fam = indi.prev:fam(fam.data)
-    return fam, indi:spousein(fam), n
-  end
 end
 
 --- for spouse,family,k in indi:spouses() do
@@ -199,7 +151,7 @@ INDI.spouses = function(indi)
   local n=0
   return function()
     local family, spouse
-    repeat 
+    repeat -- it is possible for a family to have no spouse!
       family, spouse = fams()
     until spouse or not family
     n=n+1
@@ -233,14 +185,6 @@ FAM.marriage = function(fam)
   return fam.MARR
 end
 
-FAM.husband = function(fam)
-  return fam.prev:indi(fam.HUSB.data)
-end
-
-FAM.wife = function(fam)
-  return fam.prev:indi(fam.WIFE.data)
-end
-
 FAM.nchildren = function(fam)
   local n=0
   for _ in fam:children() do
@@ -259,20 +203,6 @@ FAM.lastchild = function(fam)
   return child
 end
 
---- for child,k in fam:children() do
-FAM.children = function(fam)
-  local k=0
-  local child
-  return function()
-    repeat
-      k=k+1
-      child = fam[k]
-    until not child or child.tag=='CHIL'
-    if not child then return end
-    return fam.prev:indi(child.data),child and k
-  end
-end
-
 --- for spouse,k in fam:spouses() do
 FAM.spouses = function(fam)
   local k=0
@@ -288,7 +218,7 @@ end
 -- Event functions
 
 EVENT.date = function(event)
-  return event.DATE.data
+  return event.DATE and event.DATE.data
 end
 
 EVENT.place = function(event)
@@ -304,37 +234,127 @@ EVENT.month = function(event)
 end
 
 EVENT.day = function(event)
-  return event.DATE and event.DATE:month()
+  return event.DATE and event.DATE:day()
 end
 
--- Date functions
-
--- Adds fields to a DATE record
-    do 
-local parse_date = gedcom.glob.date
-DATE._init = function(date)
-  date._year, date._month, date._day, date._status = parse_date(date.data) 
-end
-    end  
-
-DATE.day = function(date)
-  if not date._year then date:_init() end
-  return date._day
+EVENT.status = function(event)
+  return event.DATE and event.DATE:status()
 end
 
-DATE.month = function(date)
-  if not date._year then date:_init() end
-  return date._month
+-- Additional functions beyond what is in gedcom.lua. They can 
+-- be seen as applications of LifeLines.
+
+FAM.check = function(fam,options)
+  local msg = fam.msg or Message()
+  options = options or {}
+  fam.msg = msg
+  if fam.HUSB then -- TODO
+  else msg:append("Family %s has no husband",fam.key) 
+  end
+  if fam.WIFE then -- TODO
+  else msg:append("Family %s has no wife",fam.key) 
+  end
+  if options.chronological then
+    local prev
+    for child in fam:children() do
+      if prev and child:birthyear() and prev:birthyear() then
+        local compare = prev.BIRT.DATE:compare(child.BIRT.DATE)
+        if compare==1 or compare==2 then
+          msg:append("In family %s child %s should come after child %s",
+          fam.key, prev.key, child.key)
+        end
+      end
+      prev = child
+    end
+  end
 end
 
-DATE.year = function(date)
-  if not date._year then date:_init() end
-  return date._year
-end 
+INDI.check = function(indi,options)
+  local msg = indi.msg or Message()
+  indi.msg = msg
+  local birthyear, deathyear = indi:birthyear(), indi:deathyear()
+  local date_error
+  if indi.BIRT then
+    if indi.DEAT then
+      local compare = DATE.compare(indi.BIRT.DATE,indi.DEAT.DATE)
+      if compare==1 or compare==2 then date_error = true end
+    end
+  else
+    date_error = true
+  end
+  if date_error then msg:append("%s %s ",indi.key,indi:refname()) end
+end
+    
 
-DATE.status = function(date) 
-  if not date._year then date:_init() end
-  return date._status
-end 
+GEDCOM.check = function(gedcom,options)
+  for indi in gedcom:forindi() do
+    indi:check(options)
+  end
+  for fam in gedcom:forfam() do
+    fam:check(options)
+  end
+end
 
+-- Superseded by Toolkit functions in gedcom.lua
+--[[---- Subcollections
+-- If you make a new collection of individuals selected from a larger
+-- collection, the new GEDCOM might lack some families referred to.
+-- If you included those families as you go along, some individuals
+-- not included in the collection might be left over in those families.
 
+--- gedcom:prune()
+-- remove individuals not in the container from families 
+GEDCOM.prune = function(gedcom)
+  local schedule = {}
+  for fam in gedcom:forfam() do
+    for k=#fam,1,-1 do 
+      if indi.tag=='INDI' and not gedcom[indi.key] then
+        tremove(fam,k)
+      end
+    end
+  end
+end
+
+--- gedcom:make_families()
+-- Create families from individuals in the container
+GEDCOM.make_families = function(gedcom)
+  for indi in gedcom:forindi() do
+    for tag in ("FAMC,FAMS"):gmatch"[^,]+" do
+      for field in indi:tagged(tag) do
+        fam = gedcom:new_family(field.data:match(key_pattern))
+        fam:include(indi,tag)
+      end
+    end
+  end
+end
+
+--- family:include(indi,tag)
+-- Add an item for this individual, as HUSB, WIFE or CHIL depending on
+-- whether 'tag' is FAMS or FAMC.
+FAM.include = function(family,indi,tag)
+  local item
+  if tag=='FAMC' then 
+    item=ITEM.new('CHIL',key_format:format(indi.key))
+  elseif tag=='FAMS' then
+    if indi:male() then
+      item=ITEM.new('HUSB',key_format:format(indi.key))
+    elseif indi:female() then
+      item=ITEM.new('WIFE',key_format:format(indi.key))
+    else assert(false,"Neither hisband nor wife")
+    end
+  else assert(false,"Neither FAMS nor FAMC") -- HIESA
+  end
+end
+
+--- gedcom:new_family(key)
+-- Return the family with the given key, making a new one if necessary
+GEDCOM.new_family = function(gedcom,key)
+  local fam = gedcom[key] 
+  if not fam then
+    fam = FAM.new(key)
+    gedcom:append(fam)
+  end
+  return fam
+end  
+--]]
+  

@@ -1,29 +1,26 @@
---- gedcom.lua  © Dirk Laurie  2017 MIT License like that of Lua 5.3
+--- gedcom.lua  © Dirk Laurie  2017 MIT License like that of Lua 5.3
 -- Object-oriented representation of GEDCOM files
--- Lua Version: 5.3 (uses the `utf8` library)
+-- Lua Version: 5.3 (should work with 5.2, but has not extensively been 
+--   so tested)
+-- The module returns a table with fields: `new, read, help, util, glob, meta`.
+-- Look at 'help' for more information.
 
-assert (utf8 and string and table 
-    and string.unpack and utf8.len and table.move, 
-    "The module `gedcom` needs Lua 5.3")
--- Note on `assert`: it is used to detect programming errors only.
--- Errors in the GEDCOM file are reported in a different way.
-
--- The module returns a table with fields: `read, help, util, glob, meta`.
 local help = [[
 The module returns a table, here called `gedcom`, containing:
   `help` This help string.
-  `read` A function which constructs a GEDCOM container, here called `ged`, 
-    and in addition returns a message, here called `msg`, suitable for 
-    writing to a log file. If construction failed, `ged` is nil and `msg`
+  'new`  A function which constructs an GEDCOM container and optionally 
+   initializes custom fields.
+  `read` A function which reads a GEDCOM file into a new container, here 
+    called `ged`, and returns a message, here called `msg`, suitable for 
+    writing to a log file. If construction failed, `ged` is nil and `msg` 
     gives the reason for failure.
-  `glob` A few functions that would be convenient additions to the global 
-    library.
   `meta` The metatables of GEDCOM-related objects: GEDCOM, RECORD, FIELD, 
-    ITEM.
+    ITEM, containing methods and metamethods.
+  `glob` A few non-member functions that might be useful outside this file.
   `util` A table containing utility functions. They are provided mainly 
     for the convenience of code maintainers, and as documented briefly 
     below in LDoc format compatible with the module `ihelp` available 
-    from LuaRocks.
+    from LuaRocks.
 
 `gedcom.read` takes one argument, which must be the name of an existing 
 GEDCOM file. Thus you will normally have the following lines in your 
@@ -53,10 +50,10 @@ of CONT, joined by a newline) to the data of the main line to which they
 belong. In CONC and CONT lines, 'data' may have leading blanks, i.e. only 
 one blank is assumed to separate 'tag' from 'data'. 
    `prev`: the higher-level object to which the object belongs.
-   `size`: the number of lines in the original GEDCOM file that the onject
-occupies.
-   `lineno`: the number of the line in the original GEDCOM file where this
-object starts.
+   `size`: the number of lines in the original GEDCOM file that the object
+occupies. May be nil (object not from a file).
+   `pos`: 
+   `count`: 
    `msg`: a message object. May be nil. See MESSAGE.help.
 
 All types except subitems have an __index metamethod such that you can say 
@@ -72,6 +69,13 @@ local GEDCOM = {__name="GEDCOM container"}
 local RECORD = {__name="GEDCOM record"}
 local FIELD = {__name="GEDCOM field"}
 local ITEM = {__name="GEDCOM item"}
+local INDI = {}
+local FAM = {}
+local DATE = {}
+local NAME = {}
+local CHIL = {}
+local HUSB = {}
+local WIFE = {}
 local MESSAGE = {__name="GEDCOM message list"}
 
 GEDCOM.help =[[
@@ -79,9 +83,6 @@ GEDCOM.help =[[
 records at entries 1,2,...,. It does not have the entries that all the 
 others have. Instead, it has:
 
-  filename    The name of the GEDCOM file.
-  gedfile     The handle of the GEDCOM file.
-              byte of the Level 0 line with which that entry starts.
   INDI        A table in which each entry gives the number of the record 
               defining the individual with that key (at signs stripped off).
   FAM         A table in which each entry gives the number of the record
@@ -94,6 +95,10 @@ others have. Instead, it has:
   _FAM        A list of records with tag `FAM` in the original order.
   msg         List of messages associated with processing this GEDCOM.
               In addition, each line may have its own `msg`.
+
+If the container was read from a file, it also has:
+
+  filename    The name of the GEDCOM file.
 
 Indexing of a GEDCOM container is extended in the following ways:
   1. Keys. Any key occuring in a Level 0 line can be used, with or without 
@@ -134,11 +139,14 @@ a Level 3 line from a GEDCOM file. It may also have an entry `lines` which
 is an array of strings containing at least one line at level 4 or beyond.]]
 
 -- declare some utilities as upvalues
-local append, tconcat, tsort = table.insert, table.concat, table.sort
-local util, -- forward declaration of utilities
-   Record, reader, level, tagdata, keytagdata, to_gedcom, lineno, tags
+local append, tconcat, tsort, tremove = 
+  table.insert, table.concat, table.sort, table.remove
+local meta  -- forward declaration of metatable collection 
+local -- forward declaration of utilities
+   Record, reader, level, tagdata, keytagdata, to_gedcom, lineno, tags,
+   tagend
 -- forward declaration of private methods
-local _read, _parse_date 
+local _read, parse_date 
 
 MESSAGE.help = [[
 Customizable messaging. 
@@ -148,12 +156,13 @@ Msg = Message(translate) constructs a message processor with a custom
   table is given, GEDCOM.translate is used. 
 
 Msg:append ([status,][lineno,]message,...) appends a parameterized message to the 
-  processor, constructed as 'message:format(...)'. 
-    `status` is an optional boolean argument: if omitted, the message is 
+    processor, constructed as 'message:format(...)'. 
+  `status` is an optional boolean argument: if omitted, the message is 
     purely informative; if `true`, it describes an error; if `false`, 
-    a warning. Boolean upvalues `Error=true` and `Warning=false` are provided 
-    for this file only.
-    `lineno` is an optional number argument: if provided, it appears before
+    a warning. It is recommended to put 
+        local Error, Warning = true, false
+    at the top of your program file to provide readable upvalues.
+  `lineno` is an optional number argument: if provided, it appears before
     the message.
 
 Default is to print warnings and errors on `io.stderr` and to stop at first 
@@ -166,6 +175,12 @@ is not nil.
 
 Msg:concat(delim) returns the concatenation of appended messages, using the
 specified delimiter (default: newline).]]
+
+-- Usage of 'assert' in this package is to catch program errors. For example,
+-- if a line in a GEDCOM file has no tag, it is a data error and is reported
+-- via a Message, but if a line in an already constructed GEDCOM object has
+-- no tag, it is a program error since those lines should have been caught
+-- at an earlier stage.
 
 local metatable = {[0]=GEDCOM, [1]=RECORD, [2]=FIELD, [3]=ITEM}
 
@@ -197,22 +212,26 @@ MESSAGE.append = function(msg,...)
     message,lineno = lineno,nil
     tail = tail-1
   end
-  if message == nil then return end
-  msg.rawcount[message] = (msg.rawcount[message] or 0) + 1
+  if message == nil or not message:match"%S" then return end
   message = msg.translate[message] or message
   local ok, fmsg = pcall(string.format,message,select(tail,...))
   assert(ok,fmsg)
-  local count = (msg.count[fmsg] or 0) + 1
-  msg.count[fmsg] = count
   if lineno then fmsg = ("%6d:  %s"):format(lineno,fmsg) end
   append(msg,fmsg)
-  if status~=nil then msg:_error(fmsg,count) end
+  if status~=nil then 
+-- the 'rawcount' table can serve as a starting point for the construction 
+-- of a translation table
+    msg.rawcount[message] = (msg.rawcount[message] or 0) + 1
+    msg:_error(fmsg) 
+  end
 end;
 MESSAGE.concat = function (msg,delim)
   return tconcat(msg,delim or "\n")
 end 
 MESSAGE.__index = MESSAGE
-MESSAGE._error = function(msg,message,count)
+MESSAGE._error = function(msg,message)
+  local count = (msg.count[message] or 0) + 1
+  msg.count[message] = count
   if msg.errlim then 
     if count <= 1 then io.stderr:write(message,"\n") end
     if msg.errors >= msg.errlim then
@@ -228,7 +247,7 @@ end
 local function assemble(object)
   if type(object)=="string" then return object end
   local buffer = {}
-  append({},object.line)  -- allows 
+  append(buffer,object.line)  -- allows 
   if object.lines then 
     append(buffer,tconcat(object.lines,"\n"))
   else 
@@ -239,18 +258,10 @@ local function assemble(object)
   return tconcat(buffer,"\n")
 end
 
---- returns a function that tests whether a word is one of those
--- in a given list
-local any_of = function(list)
-  local words = {}
-  list:gsub("%S+",function(w) words[w]=true end)
-  return function(data)
-    if type(data)=='table' then data = data.data end
-    assert(data,"nil data supplied to any_of")
-    if words[data] then return data
-    else return nil,"%s is not in %s",data,list
-    end
-  end
+--- nonblank(s) is s if s is a non-blank string, otherwise nil
+local function nonblank(s)
+  if type(s)=='string' and s:match"%S" then return s end
+  return nil
 end
 
 -- extract date as three numbers and a modifier
@@ -259,10 +270,10 @@ local _status = {AFT="AFT",BEF="BEF",ABT="ABT",EST="EST",CAL="CAL",
    FR="FR",TO="TO"}
 local _month = {JAN=1,FEB=2,MAR=3,APR=4,MAY=5,JUN=6,JUL=7,AUG=8,SEP=9,
    OCT=10,NOV=11,DEC=12}
-_parse_date = function(data)
+parse_date = function(data)
   if type(data)=='table' then data = data.data end
   assert(type(data)=='string',
-    'Bad argument #1 to _parse_data: expected string, got '..type(data))
+    'Bad argument #1 to parse_date: expected string, got '..type(data))
   local word = data:gmatch"%S+"
   local status, day, month, year
   local item = word()
@@ -294,20 +305,12 @@ _parse_date = function(data)
 end  
     end
 
---- gedcom (FILENAME) constructs a GEDCOM container by reading FILENAME
---          FILENAME='' constructs an empty GEDCOM container
-local gedcom = function(filename)
-  local gedfile, msg
-  if type(filename)~='string' then 
-    return nil,"gedcom.read: expected filename, got "..type(filename)
-  end
-  if filename:match"%S" then 
-    gedfile, msg = io.open(filename) 
-  end
-  if msg and not gedfile then return nil, msg end
+--- constructs an empty GEDCOM container and initializes custom fields
+-- by shallow-copying them from the given table. Standard fields like
+-- INDI and 'firstrec' are **not** copied.
+local gedcom_new = function(tbl)
+  tbl = tbl or {}
   local ged = setmetatable ( {
-    filename = filename,
-    gedfile = gedfile,
     INDI = {},
     FAM = {},
     OTHER = {},
@@ -317,12 +320,35 @@ local gedcom = function(filename)
     msg = Message(),  -- a new Message for each container
     },
     GEDCOM)
-  if not gedfile then return ged end
-  msg = ged.msg 
-  if gedfile then msg:append("Reading %s",filename) end
-  _read(ged)
+  for k,v in pairs(tbl) do if not ged[k] then
+    ged[k] = v
+  end end
+  return ged
+end
+
+--- constructs a GEDCOM container and reads a GEDCOM file into it.
+-- This is deliberately not a GEDCOM method: you can only read a GEDCOM
+-- file into a new GEDCOM container.
+local gedcom_read = function(filename)
+  local gedfile, errmsg
+  if type(filename)~='string' then 
+    return nil,"gedcom.read: expected filename, got "..type(filename)
+  end
+  if filename:match"%S" then 
+    gedfile, errmsg = io.open(filename) 
+  end
+  if not gedfile then return nil, errmsg end
+-- we now have a freshly-opened gedfile
+  local ged = gedcom_new{filename=filename}
+  local msg = ged.msg 
+  msg:append("Reading %s",filename)
+  local rdr = reader(gedfile)
+  repeat
+    local rec = Record(rdr,0,ged) 
+    ged:append(rec)
+  until not rec
   msg:append("%s lines, %s records",ged[#ged].pos,#ged)
-  ged.gedfile:close()
+  gedfile:close()
   return ged, msg:concat()
 end 
 
@@ -349,28 +375,23 @@ end
 
 -- private methods of a GEDCOM container
 
---- Read entire GEDCOM file into a GEDCOM container
-_read = function(ged)
-  local gedfile, msg = ged.gedfile, ged.msg
-  local rdr = reader(gedfile)
+--- Append a record to a GEDCOM container
+GEDCOM.append = function(ged,rec)
+  if not rec then return end
+  rec.prev = rec.prev or ged
   local firstrec = ged.firstrec
-  local k=0
-  repeat
-    local rec = Record(rdr,0,ged)
-    if not rec then break end
-    k = k + 1
-    local key, tag = rec.key, rec.tag
-    if key and tag then
-      (ged[tag] or ged.OTHER)[key] = k
-      if ged[tag] then  -- update _INDI, _FAM
-        append(ged["_"..tag],rec)
-      end
+  local k = #ged + 1
+  local key, tag = rec.key, rec.tag
+  if key and tag then
+    (ged[tag] or ged.OTHER)[key] = k
+    if ged[tag] then  -- update _INDI, _FAM
+      append(ged["_"..tag],rec)
     end
-    if tag and not key then
-      firstrec[tag] = firstrec[tag] or k
-    end
-    ged[k] = rec
-  until false
+  end
+  if tag and not key then
+    firstrec[tag] = firstrec[tag] or k
+  end
+  ged[k] = rec
 end  
 
 --- public methods of a GEDCOM container
@@ -389,214 +410,120 @@ GEDCOM.write = function(ged,filename,options)
 end
 
 --- write GEDCOM object to a file
-GEDCOM.to_gedcom = function(object,file,options)
+-- If options.prune is specified, only lines allowed by 'template'
+-- are written.
+GEDCOM.to_gedcom = function(object,file,options,template)
+  template = template or object.template or {}
   to_gedcom(file,object.line,options)
   for _,record in ipairs(object) do
-    record:to_gedcom(file,options)
+    local subtemplate = template[record.tag]
+    if subtemplate or not options.prune then
+      record:to_gedcom(file,options,subtemplate)
+    end
   end
 end
 
---- build an index of records keyed by a specified tag. 
---     [index,msg] = ged:build(tag[,stringkey[,msg]])
---  `msg` is a message processor.
---  A second occurrence of the same key is discarded with a warning.
---  If 'stringkey' is omitted, you will get
---     index[record[tag].data] = record
---  'stringkey' must be a Lua expression that evaluates to a string when
---  the global environment is `record[tag]`. The expression will normally
---     involve 'data', e.g. "data" gives the default behaviour.
---  Examples:
---    ged:build "NAME" or ged:build ("NAME","data") uses `NAME.data` as key.
---    ged:build ("BIRT","DATE.data") uses `BIRT.DATE.data` as key.
-GEDCOM.build = function(ged,tag,stringkey)
-  local msg = Message()
-  local index = {}
-  local success
-  for lno,record in ipairs(ged) do
-    local key = record[tag]
-    if not key then goto continue end
-    local eval = load("return "..(stringkey or "data"),nil,nil,key)
-    if not eval then
-      msg:append(Error,"Could not compile expression '"..tostring(stringkey).."'") 
-      return nil,msg
+--- ged:find(condition)
+-- Select records from a GEDCOM collection that satisfy the condition, which 
+-- may be:
+--   a function of a record that returns the record if it is to be included
+--     and nil or nothing otherwise
+--   a table that certain fields in the record must match. See RECORD.test.
+-- The return value is a new GEDCOM collection containing only the selected
+-- fields.
+GEDCOM.find = function(ged,condition)
+  local sheaf = gedcom.new()
+  local is_func = type(condition) == 'function'
+  local is_table = type(condition) == 'table'
+  for _,v in ipairs(ged) do
+    if is_func then sheaf:append(condition(v))
+    elseif is_table then sheaf:append(v:test(condition))
     end
-    success, key = pcall(eval)
-    if success then
-      if type(key) ~= "string" then
-        msg:append(Error,"eval ".." did not return a string")
-        goto continue
-      end
-      if index[key] then
-        msg:append(Warning,lineno(record),("Duplicate value for %s: %s"):
-          format(tag,index[key].key,record.key))
-      else 
-        index[key] = record
-      end
-    elseif key then
-      local err = key .. "\n  The above message will be ignored if repeated."
-      if err ~= msg[#msg] then msg:append(Warning,err) end
-    end
-::continue::
-  end
-  return index,msg
+  end 
+  return sheaf
 end 
 
---- GEDCOM templates.
---
---  A template is a description of what is allowed at a particular point
---  in a GEDCOM file. It may be of five possible types.
---   table     Keys are tags, values are templates. The [1] entry, if any, 
---             is applied to the main record, and must not be a table; the
---             other entries in the template are applied to those subrecords 
---             that have the specified tag.
---   boolean   If true, the object is unconditionally OK; if `false`, the 
---             tag is explicitly disallowed at that position.
---   nil       The object is ignored and a warning message is issued.
---   string    A pattern against which `data` must matched.
---   function  The function is evaluated with the object as argument.
---             If true, the object is OK. If false, there must be a second 
---             return value giving a message why the object is not OK. 
---             The message may contain %s, which will be replaced by the
---             fully qualified tag of the object.
---  The non-table values all imply that subrecords are not to be validated.
---  If you want that too, put the template in the [1] entry of a table.
---
--- Supplied predefined scalar templates. These all return nil,message
--- on failure; below is shown what they return on success.
---  has_key       key in definition
---  _parse_date   year, month, day as numbers
---  name_pattern  surname
---  key_pattern   key referred to in data
-
-    do
-
-local event = {
-  DATE = _parse_date,
-  PLAC = true
-} 
-
-local description = {}
-local key_pattern = '^@(.+)@$'
-local name_pattern = '^[^/]*/([^/]+)/[^/]*$'
-description[key_pattern] = "pattern for a key: " -- ..key_pattern
-description[name_pattern] = "pattern for a name: " -- ..name_pattern
-
-local has_key = function(record)
-  assert(tags(record),"has_key takes a table with a 'tags' field")
-  if record.key then return record.key
-  else return Warning, "Tag %s must have a key",tags(record)
-  end
-end  
-
---- default template, whitelist and synonyms go into the GEDCOM table
--- and are retrieved automatically by __index. May be shadowed by your
--- own fields.
-
-GEDCOM.template = {
-  HEAD = { true,
-    CHAR = any_of'ANSI ANSEL UTF-8',
-    DATE = _parse_date,
-    DEST = true,
-    SUBM = true,
-    FILE = true,
-    GEDC = true,
-    };
-  INDI = { 
-    NAME = { name_pattern,
-      NICK = true };
-    SEX = any_of'M F N',
-    BIRT = event,
-    DEAT = event,
-    CHR = event,
-    BURI = event,
-    FAMC = key_pattern,
-    FAMS = key_pattern,
-    };
-  FAM = { 
-    HUSB = key_pattern,
-    WIFE = key_pattern,
-    CHIL = key_pattern,
-    MARR = event,
-    DIV = event,
-  };
-  NOTE = has_key;
-  SOUR = has_key;
-  SUBM = has_key;
-  REFN = false;
-  RFN = false;
-  TRLR = true
-}
-
-GEDCOM.whitelist = "NOTE RFN REFN SOUR CHAN"
-GEDCOM.synonyms = {CHRA = "CHR"}
-      
---- gedcom:validate(template)
--- Checks that the given GEDCOM container conforms to the specification
--- in the template and that all keys referred to are defined.
-GEDCOM.validate = function(gedcom,template,whitelist,synonyms)
-  template = template or gedcom.template
-  whitelist = whitelist or gedcom.whitelist
-  synonyms = synonyms or gedcom.synonyms
-  local whitelisted = any_of(whitelist)
-  local msg = Message()
-  local function report(pos,fmt,...)
-    msg:append(Warning,pos,fmt,...)
-  end
---- check that cross-references are satisfied
-  local function _checkref(ged)
-    if ged.data then
-      local key = ged.data:match(key_pattern)
-      if not ged[key] then
-        report("key %s is used but nowhere defined") 
+--- for record,n in gedcom:tagged(pattern) do
+-- loop over all records that whose tag matches the specified pattern
+GEDCOM.tagged  = function(gedcom,pattern)
+  local k,n = 0,0
+  return function()
+    repeat
+      k=k+1
+      local v = gedcom[k]
+      if not v or v.tag:match(pattern) then 
+        n=n+1
+        return v,v and n
       end
-    end
+    until false
   end
-  local function validate (ged,tmpl)
-    if ged == nil then return end
-    local pos = lineno(ged)
--- Tests that do not examine `ged`
-    if tmpl==nil and pos then
-      return whitelisted(ged.tag) or
-        report(pos,'Tag %s ignored and its subrecords skipped',tags(ged))
-    elseif not tmpl then
-      report(pos,"%s is not allowed here",ged.tag)
-    elseif tmpl==true then 
-      return  -- nothing to test, always OK
-    end
--- At level 0, if not marked `true`, there must be a key
-    if tmpl==nil and ged.prev==gedcom then
-      local OK,errmsg = has_key(ged) 
-      if not OK then report(pos,select(2,has_key(ged))) end
-    end
-    if type(tmpl) == 'function' then
-      local OK,errmsg = tmpl(ged)
-      return OK or report(pos,select(2,tmpl(ged)))
-    elseif type(tmpl)=='string' then
-      return ged.data:match(tmpl) or
-        report(pos,"Data does not match %s%s",description[tmpl],ged.data)
-    elseif type(tmpl)=='table' then
-      if tmpl[1] then
-        assert(type(tmpl[1])~='table','template[1] may not be a table')
-        validate(ged,tmpl[1])
-      end
-      for _,record in ipairs(ged) do
-         validate(record,tmpl[record.tag] or tmpl[synonyms[record.tag]])
-      end
-    else 
-      assert(false,"A template item may not be of type "..type(tmpl))     
-    end
-  end            
-  validate(gedcom,template)
-  _checkref(gedcom)
-  return msg
 end
+RECORD.tagged = GEDCOM.tagged
+FIELD.tagged = GEDCOM.tagged
+ITEM.tagged = GEDCOM.tagged 
+
+--- for field[,cap1[,cap2,...]] in record:withdata(pattern) do
+-- loop over all fields that whose 'data' matches the specified pattern
+-- You can specify as many captures as you expect from the pattern.
+RECORD.withdata = function(record,pattern)
+  local k = 0
+  return function()
+    repeat
+      k=k+1
+      local v = record[k]
+      local match = v and v.data:match(pattern)
+      if match then return v,v.data:match(pattern) end
+    until not v
+  end
+end
+FIELD.withdata = RECORD.withdata
+ITEM.withdata = RECORD.withdata 
+
+--- build an index of records keyed by the data of a specified tag,
+--  or by the value of a given function applied to the record.
+--      index,duplicates = ged:build(tag[,rectag])
+--  If 'rectag' is specified (e.g. 'INDI' or 'FAM'), only records
+--     with that tag will be candidates for inclusion.
+--- If 'tag' is a function, you will get
+--      index[tag(record)] = record
+--  If 'tag' is a string, you will get
+--      index[record[tag].data] = record
+--  If a key occurs more than once, only the first occurrence is in 'index'.
+--    All its occurrences, including the first, are returned in 
+--    'duplicates', which differs from 'index' in that the values are not 
+--    records but lists of records.   
+--  Examples:
+--    ged:build "NAME" keys records by the NAME field 
+--    ged:build(INDI.refname) keys records by reference name
+GEDCOM.build = function(ged,tag,rectag)
+  local index, duplicates = {}, {}
+  local function bank(key,value)
+    if not (key and value) then return end
+    if index[key] then
+      local dup = duplicates[key]
+      if dup then dup[#dup+1] = value
+      else duplicates[key] = {index[key],value}
+      end
+    else index[key] = value
     end
-
-RECORD.validate = GEDCOM.validate
-FIELD.validate = GEDCOM.validate
-ITEM.validate = GEDCOM.validate
-
---------------------
+  end 
+  if type(tag) == 'function' then
+    for _,record in ipairs(ged) do 
+      if not rectag or record.tag == rectag then       
+        bank(tag(record),record) 
+      end
+    end
+  elseif type(tag) == 'string' then 
+    for _,record in ipairs(ged) do 
+      if not rectag or record.tag == rectag then   
+        local key = record[tag]
+        bank(key and key.data,record,num) 
+      end
+    end
+  else assert(false,"argument 'tag' to 'build' must be function or string")
+  end
+  return index,duplicates
+end 
 
 --- object, message = Record(rdr,base)
 --  Reads one GEDCOM object at level `base`, getting its input from the
@@ -668,7 +595,7 @@ RECORD.__index = function(record,idx)
   local metamethod = getmetatable(record)[idx]
   if metamethod then return metamethod end
 -- is there a specialized method for this type of record?
-  local methods = meta[record.tag]
+  local methods = meta[rawget(record,"tag")]
   local method = methods and methods[idx]
   if method then return method end
 -- find the first field with that tag
@@ -680,20 +607,76 @@ RECORD.__index = function(record,idx)
   end
 end
 
-RECORD.to_gedcom = GEDCOM.to_gedcom
-FIELD.to_gedcom = GEDCOM.to_gedcom
+--- record:test(program)
+-- Returns 'record' if it passes all the tests in 'program', otherwise
+-- return nothing.
+-- The tests may be in the list part or the non-list part of 'program'.
+-- Tests in the list part must be functions. They are applied to 'record'
+-- in the specified order and must return a true value to pass.
+-- The other tests are each specified by a pair (tag,pat).
+-- * If record[tag] is nil, the test fails.
+-- * If record[tag] is a function, 'result = record[tag](record)' is evaluated.
+--   If 'pat' is boolean, the test succeeds if it has the same truth value 
+--     as 'result'.
+--   If 'result' and 'pat' are both strings, the test succeeds if 'result'
+--   matches 'pat'.
+-- * If record[tag] and 'pat' are both strings, the test succeeds if
+-- record[tag] matches 'pat'.
+-- * If record[tag] is a table and 'pat' a string, the test succeeds if 
+-- record[tag].data matches 'pat'. 
+-- * If record[tag] and 'pat' are both tables, the test succeeds if the
+-- recursive call record[tag]:test(tag) does.
+-- If none of the above apply, the test fails.
+RECORD.test = function(record,program)
+  for tag,pat in pairs(program) do 
+    local rec = record[tag]
+    if not rec then return end
+    if type(rec)=='function' then 
+      local result = rec(record)
+      if type(pat) == 'boolean' then
+        if not ((result and pat) or (not result and not pat)) then return end
+      elseif type(pat) == 'string' and type(result) == 'string' then
+        if not result:match(pat) then return end
+      else return
+      end
+    elseif type(rec)=='string' and type(pat)=='string' then
+      if not rec:match(pat) then return end
+    elseif type(rec)=='table' then
+      if type(pat)=='string' then
+        if not rec.data:match(pat) then return end
+      elseif type(pat)=='table' then 
+        if not (rec.test and rec:test(pat)) then return end      
+      else return 
+      end
+    else return
+    end
+  end 
+  return record
+end
 
-ITEM.to_gedcom = function(item,file,options)
+-- If options.prune is specified, only lines allowed by 'template'
+-- are written.
+ITEM.to_gedcom = function(item,file,options,template)
+  template = template or {}
   to_gedcom(file,item.line,options)
   for _,subitem in ipairs(item) do
-    to_gedcom(file,subitem.line,options)
-    if subitem.lines then 
-      for _,line in ipairs(subitem.lines) do
-        to_gedcom(file,line,options)
+    local subtemplate = template[item.tag]
+    if subtemplate or not options.prune then   
+      to_gedcom(file,subitem.line,options)
+      if subitem.lines then 
+        for _,line in ipairs(subitem.lines) do
+          to_gedcom(file,line,options)
+        end
       end
     end   
   end
 end
+
+RECORD.to_gedcom = GEDCOM.to_gedcom
+FIELD.to_gedcom = GEDCOM.to_gedcom
+
+FIELD.test = RECORD.test
+ITEM.test = RECORD.test
 
 FIELD.__index = RECORD.__index
 ITEM.__index = RECORD.__index
@@ -712,14 +695,26 @@ RECORD._lineno = function(record)
 end
 
 FIELD._lineno = function(field)
+  if not field.count then return nil end
   return field.prev:_lineno() + field.count
 end
 
 ITEM._lineno = FIELD._lineno
 
+--- Change 'data', also updating `line`.
+RECORD.to = function(record,data)
+  local pos = tagend(record.line)
+  assert(pos,'line has no tag')
+  record.data = data
+  record.line = record.line:sub(1,pos-1) .. ' ' .. data
+end
+FIELD.to = RECORD.to
+ITEM.to = RECORD.to
+
 --- non-method `lineno` that works at all levels
 lineno = function(subitem)
   if subitem._lineno then return subitem:_lineno()
+  elseif not subitem.count then return 0
   elseif subitem.prev then 
     return subitem.prev:_lineno() + subitem.count
   else return subitem.count
@@ -759,6 +754,13 @@ end
 keytagdata = function(line)
   assert(type(line)=="string")
   return line:match"%s*%d+%s+@(%S+)@%s+(%S+)%s?(.*)"
+end
+
+--- tagend(line) is the position after the tag
+tagend = function(line)
+  assert(type(line)=="string")
+  return line:match"%s*%d+%s+@%S+@%s+%S+()" or
+            line:match"%s*%d+%s+%S+()"
 end
 
 --- `reader` object: read and reread lines from file, list or string
@@ -827,7 +829,7 @@ end
 -- lines.
 to_gedcom = function(file,line,options)
   if not line then return end
-  local linelength = options.linelength
+  local linelength = options.linelength or 128
   local base = tonumber(line:match"%d")
   local CONC = ("%d CONC "):format(base+1)
   local CONT = ("%d CONT "):format(base+1)
@@ -851,6 +853,444 @@ to_gedcom = function(file,line,options)
   end            
 end
 
+-------------------- specialized tag functions -------------------------
+
+------ DATE functions
+
+-- Adds fields to a DATE record
+DATE._init = function(date)
+  date._year, date._month, date._day, date._status = parse_date(date.data) 
+end
+
+DATE.day = function(date)
+  if not date._year then date:_init() end
+  return date._day
+end
+
+DATE.month = function(date)
+  if not date._year then date:_init() end
+  return date._month
+end
+
+DATE.year = function(date)
+  if not date._year then date:_init() end
+  return date._year
+end 
+
+DATE.status = function(date) 
+  if not date._year then date:_init() end
+  return date._status
+end 
+
+--- Result of comparison can be:
+--  -2    first date is earlier if ABT qualifiers are neglected
+--  -1    first date is equal or earlier
+--   0    the dates are equal
+--   1    first date is equal or later
+--   2    first date is later if ABT qualifiers are neglected
+--  nil   an argument is invalid
+-- false  the dates cannot be compared
+-- true   the dates may be equal but are not given to the same precision
+DATE.compare = function(date1,date2)
+  if not (type(date1)=='table' and type(date1.year)=='function' and
+          type(date2)=='table' and type(date2.year)=='function') then 
+    return nil 
+  end
+  local   year1,        month1,        day1,        status1 =  
+    date1:year(), date1:month(), date1:day(), date1:status()
+  local   year2,        month2,        day2,        status2 =  
+    date2:year(), date2:month(), date2:day(), date2:status()
+  if not year1 and year2 then return nil end
+  local compare
+-- calculate comparison ignoring qualifiers
+  if year1<year2 then compare=-1
+  elseif year1>year2 then compare=1
+    elseif month1 and month2 then
+      if month1<month2 then compare=-1
+      elseif month1>month2 then compare=1
+        elseif day1 and day2 then
+          if day1<day2 then compare=-1
+          elseif day1>day2 then compare=1
+          else compare=0
+          end
+        elseif day1 or day2 then compare=true
+      else compare=0
+      end
+    elseif month1 or month2 then compare=true
+  else compare=0
+  end
+-- return this when unqualified
+  if not (status1 or status2) then return compare end
+-- handle 'false' returns
+  if status1=='BEF' and (status2=='BEF' or compare==1) or
+     status1=='AFT' and (status2=='AFT' or compare==-1) or
+     status2=='BEF' and compare==-1 or
+     status2=='AFT' and compare==1
+    then return false
+  end  
+-- in other cases when 'BEF' or 'AFT' is specified, result must be -1 or -1 
+  if status1=='BEF' or status2=='AFT' then compare=-1
+  elseif status1=='AFT' or status2=='BEF' then compare=1
+  end 
+-- if any 'ABT' is around, make things imprecise
+  if status1=='ABT' or status2=='ABT' then
+    if compare==0 then return true 
+    elseif compare==1 or compare==-1 then return 2*compare
+    end
+  end
+  return compare
+end
+
+------ NAME functions
+
+    do
+local name_pattern = '^([^/]-)%s*/([^/]+)/%s*([^/]*)$'
+NAME.name = function(name,capitalize,omit_surname)
+  local pre, surname, post = name.data:match(name_pattern)
+  if not pre then return name.data end
+  if capitalize then surname = surname:upper() end
+  if omit_surname then surname = nil end
+  local buf = {}
+  append(buf,nonblank(pre)); append(buf,surname); append(buf,nonblank(post))
+  return tconcat(buf,' ')
+end  
+
+INDI.name = function(indi,capitalize,omit_surname)
+  return indi.NAME and indi.NAME:name(capitalize,omit_surname)
+end
+    end
+
+------------------ Constructors and maintainers ---------------------
+
+local key_pattern = "@(.+)@"
+
+RECORD.new = function(key,tag,data)
+  data = data or ''
+  local line = {0}
+  line[#line+1] = '@'..key..'@'
+  line[#line+1] = tag
+  line[#line+1] = data
+  return setmetatable ({key=key, tag=tag, data=data, 
+    line = tconcat(line," ")}, RECORD)
+end
+
+FIELD.new = function(tag,data)
+  data = data or ''
+  local line = {1}
+  line[#line+1] = tag
+  line[#line+1] = data
+  return setmetatable ({tag=tag, data=data, line=tconcat(line," ")}, FIELD)
+end
+ 
+ITEM.new = function(tag,data)
+  data = data or ''
+  local line = {2}
+  line[#line+1] = tag
+  line[#line+1] = data
+  return setmetatable ({tag=tag,data=data,line=tconcat(line," ")}, ITEM)
+end
+
+RECORD.append = function(record,field)
+  field.prev = record
+  record[#record+1] = field
+end
+FIELD.append = RECORD.append
+ITEM.append = RECORD.append
+
+------------ additional GEDCOM, RECORD and FIELD utilities -------------
+
+-- Many of these functions logically belong in lifelines.lua, but are
+-- needed already.
+
+-- A stub is an individual without any family.
+INDI.is_stub = function(indi)
+  return not (indi.FAMS or indi.FAMC)
+end
+
+GEDCOM.indi = function(gedcom,key)
+  local indi = gedcom[key]
+  if indi and indi.tag == "INDI" then return indi end
+end
+
+GEDCOM.fam = function(gedcom,key)
+  local fam = gedcom[key]
+  if fam and fam.tag == "FAM" then return fam end
+end
+
+FAM.husband = function(fam)
+  local husband = fam.HUSB
+  if husband then return fam.prev:indi(husband.data) end
+end
+
+FAM.wife = function(fam)
+  local wife = fam.WIFE
+  if wife then return fam.prev:indi(wife.data) end
+end
+
+--- for child,k in fam:children() do
+FAM.children = function(fam)
+  local iter = fam:tagged"CHIL"
+  return function()
+    local child, n = iter()
+    if not child then return end
+    return fam.prev:indi(child.data),n
+  end
+end
+
+FAM.member = function(fam,key)
+  for _,v in ipairs(fam) do 
+    if v.data and v.data:match(key_pattern) == key then
+      return v
+    end
+  end
+end
+
+INDI.sex = function(indi)
+  return indi.SEX.data
+end
+
+INDI.male = function(indi)
+  return indi:sex() == 'M'
+end
+
+INDI.female = function(indi)
+  return indi:sex() == 'F'
+end
+
+INDI.parents = function(indi)
+  local parents = indi.FAMC
+  if parents then
+    return indi.prev:fam(parents.data)
+  end
+end
+
+INDI.father = function(indi)
+  local parents = indi:parents() 
+  if parents then 
+    return parents:husband()
+  end
+end
+
+INDI.mother = function(indi)
+  local parents = indi:parents() 
+  if parents then
+    return parents:wife()
+  end
+end
+
+-- indi:spousein(fam) 
+-- if indi is a parent in the family, then the other parent, if any, 
+-- is returned, otherwise nothing.
+INDI.spousein = function(indi,fam)
+  if not fam then return end
+  local husband, wife = fam:husband(), fam:wife()
+  if indi == husband then return wife
+  elseif indi == wife then return husband
+  end
+end
+
+INDI.by_birthday = function(indi,other)
+  local comp = DATE.compare(indi:birthdate(),other:birthdate())
+  if type(comp)=='number' and comp<0 then return true end
+end
+
+-- for child,k in indi:children() do
+-- VARIANT: children, msg = indi:children'table'
+--   Returns a table (not an iterator) and a message object 
+INDI.children = function(indi,typ)
+  local msg = Message()
+  local children = {}
+  local year=0
+  local k=0
+  for fam in indi:families() do
+    for child in fam:children() do
+      children[#children+1] = child
+      if not child:birthyear() then
+        year = year+1
+        msg:append(Warning,
+        "In family %s, spurious birth year %s has been allocated to %s",
+        fam.key,year,child:name(true))
+        if child.BIRT then child.BIRT.DATE = {data=tostring(year)}
+        else child.BIRT = {DATE = {data=tostring(year)}}
+        end
+      end
+    end
+  end
+  tsort(children,indi.by_birthday)
+  if typ=='table' then return setmetatable(children,{__index=GEDCOM}),msg
+  else return function()
+    k=k+1
+    return children[k],k
+    end
+  end
+end   
+
+--- for family,spouse,k in indi:families() do
+INDI.families = function(indi)
+  local iter = indi:tagged'FAMS'
+  return function()
+    local fam, n = iter()
+    if not fam then return end
+    fam = indi.prev[fam.data]
+    return fam, indi:spousein(fam), n
+  end
+end
+
+INDI.birthyear = function(INDI)
+  local date = INDI:birthdate()
+  return date and date:year()
+end
+
+INDI.birthdate = function(INDI)
+  return INDI.BIRT and INDI.BIRT.DATE
+end
+
+INDI.deathyear = function(INDI)
+  local date = INDI:deathdate()
+  return date and date:year()
+end
+
+INDI.deathdate = function(INDI)
+  return INDI.DEAT and INDI.DEAT.DATE
+end
+
+--- A name with vital years in order to aid identification
+INDI.refname = function(indi)
+  local buf = {}
+  append(buf,indi:name(true))
+  append(buf,indi:lifespan() or '')
+  return tconcat(buf," ")
+end
+
+INDI.lifespan = function(indi)
+  local lst = {}
+  lst[#lst+1] = indi:birthyear()
+  lst[#lst+1] = "-"
+  lst[#lst+1] = indi:deathyear()
+  if #lst>1 then return '(' .. tconcat(lst) ..")" end
+end 
+
+---------- GEDCOM Toolkit functions ----------
+
+INDI.forefather = function(indi)
+  local progenitor,level = indi,0
+  repeat 
+    local prog = progenitor:father()
+    if not prog then return progenitor,level end
+    progenitor, level = prog,level+1
+  until false
+end
+
+--- find male person with most generations of descendants
+GEDCOM.alpha = function(gedcom)
+  local main
+  local level = 0
+  for indi in gedcom:tagged"INDI" do 
+    local prog, lev = indi:forefather()
+    if lev>level then
+      main,level = prog,lev
+    end
+  end
+  return main
+end
+
+--- indi:descendants() 
+-- Make a new GEDCOM container whose core is a single individual plus
+-- descendants and their spouses, plus parents of the root individual.
+-- The individual records are not cloned.
+INDI.descendants = function(indi,ged)
+  local oldged = ged 
+  ged = ged or gedcom_new()
+  ged:append(indi)
+  if not oldged then
+    ged:append(indi:parents());
+    ged:append(indi:father())
+    ged:append(indi:mother())
+  end
+  for fam, spouse in indi:families() do
+    if spouse then 
+      ged:append(spouse)
+      ged:append(spouse:parents())
+      ged:append(spouse:father())
+      ged:append(spouse:mother())
+    end
+    ged:append(fam)
+    for child in fam:children() do
+      child:descendants(ged)
+    end
+  end  
+  ged:fix_families()
+  return ged
+end
+
+--- Ensure that all families referred to in individual entries exist
+-- and refer to that indiviual.
+GEDCOM.fix_families = function(ged)
+  for indi in ged:tagged"INDI" do
+    for field in indi:tagged"FAM?" do
+      local fam = ged[field.data]
+      if not fam then
+        fam = RECORD.new(field.data:match(key_pattern),'FAM')
+        ged:append(fam)
+      end
+      if not fam:member(indi.key) then
+        local role = 'CHIL'
+        if field.tag == 'FAMS' then
+          if indi:male() then role = 'HUSB'
+          else role = 'WIFE'
+          end
+        end
+        fam:append(FIELD.new(role,'@'..indi.key..'@'))
+      end
+    end
+  end      
+end
+
+--- Remove non-existent individuals from families
+FAM.prune = function(fam)
+  local ged = fam.prev
+  local k=1
+  repeat 
+    local key = fam[k].data:match(key_pattern)
+    if key and not ged[key] then
+      tremove(fam,k)
+    else k=k+1
+    end
+  until not fam[k]
+end
+
+GEDCOM.prune = function(ged)
+  for fam in ged:tagged"FAM" do
+    fam:prune()
+  end
+end
+
+--- tbl = GEDCOM.match(ged1,ged2,field,rectag)
+-- Find matches of equal fields between two GEDCOMs.
+-- Returns a table of pairs (k1,k2), where k1 and k2 are both keys of 
+-- records with tag 'rectag' in ged1 and ged2 respectively, such that 
+--  *  ged1[k1][field] == ged2[k2][field], if field is a string
+--  *  field(ged1[k1]) == field(ged2[k2]), if field is a function
+GEDCOM.match = function(ged1,ged2,field,rectag)
+  local tbl = {} 
+  local msg = Message()
+  local index1, dup1 = ged1:build(field,rectag)
+  local index2, dup2 = ged2:build(field,rectag)
+  for k,v1 in pairs(index1) do
+    local v2 = index2[k]
+    if v2 then
+      if dup1[k] or dup2[k] then
+        msg:append("Can't yet handle internal duplicates in GEDCOM.match")
+      else
+        tbl[v1.key] = v2.key
+      end
+    end
+  end
+  return tbl
+end
+
+--------------------- wind up and return ----------------
+
 local methods = function(object)
   local meth = {}
   for k in pairs(getmetatable(object)) do if not k:match"^_" then
@@ -870,13 +1310,30 @@ local metamethods = function(object)
 end
 
 -- Export the utilities and metatables. 
-util = {reader=reader, Record=Record, level=level, tagdata=tagdata, 
+local util = {reader=reader, Record=Record, level=level, tagdata=tagdata, 
   keytagdata=keytagdata, assemble=assemble, Message=Message }
 
 meta = { GEDCOM=GEDCOM, RECORD=RECORD, FIELD=FIELD, ITEM=ITEM, 
-   MESSAGE=MESSAGE }
+   INDI=INDI, FAM=FAM, DATE=DATE, NAME=NAME, MESSAGE=MESSAGE }
 
-glob = { lineno=lineno, tags = tags, methods = methods, 
-  metamethods = metamethods, date = _parse_date } 
+local glob = { lineno=lineno, tags = tags, methods = methods, 
+  metamethods = metamethods, date = parse_date } 
 
-return { read=gedcom, util=util, help=help, meta=meta, glob=glob }
+-- TODO move the following stuff elsewhere
+
+--[[ Three starting hyphens to enable global assignment check, two to disable.
+setmetatable(_ENV,{__newindex=function(ENV,key,value)
+  print('Assigning ',value,' to global variable ',key)
+  print(debug.traceback())
+  rawset(ENV,key,value) end})
+--]]
+
+--[[assert (utf8 and string and table 
+    and string.unpack and utf8.len and table.move, 
+    "The module `gedcom` needs Lua 5.3")
+-- Note on `assert`: it is used to detect programming errors only.
+-- Errors in the data are reported in a different way.
+--]]
+
+return { read=gedcom_read, new=gedcom_new, util=util, help=help, 
+  meta=meta, glob=glob }
