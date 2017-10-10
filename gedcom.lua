@@ -155,8 +155,8 @@ Msg = Message(translate) constructs a message processor with a custom
   translation table, which is stored as `Msg.translate`. If no translation 
   table is given, GEDCOM.translate is used. 
 
-Msg:append ([status,][lineno,]message,...) appends a parameterized message to the 
-    processor, constructed as 'message:format(...)'. 
+Msg:append ([status,][lineno,]message,...) appends a parameterized message to 
+    the processor, constructed as 'message:format(...)'. 
   `status` is an optional boolean argument: if omitted, the message is 
     purely informative; if `true`, it describes an error; if `false`, 
     a warning. It is recommended to put 
@@ -277,7 +277,10 @@ parse_date = function(data)
   local word = data:gmatch"%S+"
   local status, day, month, year
   local item = word()
-  if _status[item] then
+  if not item then
+    return 
+  end
+  if _status[item:upper()] then
     status = item
     item = nil
   end
@@ -288,19 +291,22 @@ parse_date = function(data)
     item = nil
   end
   item = item or word()
-  n = _month[item:upper()]
+  n = item and _month[item:upper()]
   if n then
     month = n
     item = nil
   end
   item = item or word()
-  if item:match"^%d%d%d%d$" then
+  if item and item:match"^%d%d%d%d$" then
     year = tonumber(item)
+  end
+  if day and not month and not year then
+    return day, nil, nil, status
   end
   if year and not (day and not month) and not word() then    
     return year, month, day, status
   else
-    return nil,"Nonstandard date format: %s",data
+    return nil,("Nonstandard date format: %s"):format(data)
   end  
 end  
     end
@@ -370,7 +376,8 @@ GEDCOM.__index = function(ged,idx)
 -- must be a method
     return GEDCOM[idx] 
   end
-  assert(type(idx)=='number',"Invalid key type for GEDCOM container: "..type(idx))
+  assert(type(idx)=='number',
+    "Invalid key type for GEDCOM container: "..type(idx))
 end
 
 -- private methods of a GEDCOM container
@@ -384,7 +391,7 @@ GEDCOM.append = function(ged,rec)
   local key, tag = rec.key, rec.tag
   if key and tag then
     (ged[tag] or ged.OTHER)[key] = k
-    if ged[tag] then  -- update _INDI, _FAM
+    if ged[tag] then  
       append(ged["_"..tag],rec)
     end
   end
@@ -423,22 +430,27 @@ GEDCOM.to_gedcom = function(object,file,options,template)
   end
 end
 
---- ged:find(condition)
--- Select records from a GEDCOM collection that satisfy the condition, which 
--- may be:
+--- ged:find(...)
+-- Select records from a GEDCOM collection that satisfy all the given
+-- conditions, each of which may be:
 --   a function of a record that returns the record if it is to be included
 --     and nil or nothing otherwise
 --   a table that certain fields in the record must match. See RECORD.test.
 -- The return value is a new GEDCOM collection containing only the selected
 -- fields.
-GEDCOM.find = function(ged,condition)
+GEDCOM.find = function(ged,...)
   local sheaf = gedcom.new()
-  local is_func = type(condition) == 'function'
-  local is_table = type(condition) == 'table'
+  local n = select('#',...)
   for _,v in ipairs(ged) do
-    if is_func then sheaf:append(condition(v))
-    elseif is_table then sheaf:append(v:test(condition))
+    local ok = true
+    for k=1,n do
+      local condition = select(k,...)
+      if type(condition) == 'function' then ok = condition(v)
+      elseif type(condition) == 'table' then ok = v:test(condition)
+      end
+      if not ok then break end
     end
+    if ok then sheaf:append(v) end
   end 
   return sheaf
 end 
@@ -534,7 +546,7 @@ end
 --    subitem = Record(rdr,3,item)
 Record = function(rdr,base,prev)
   assert(base<=3,"No subdivision supported past level 3")
-  local msg={append=append}
+  local msg=Message()
   local line,pos,count,key,tag,data
   repeat
     line,pos,count = rdr()
@@ -565,8 +577,13 @@ Record = function(rdr,base,prev)
   local lines = {}
   local record = setmetatable( {line=line,lines=lines,pos=pos,key=key,tag=tag,
      data=data,msg=msg,prev=prev,size=1,count=count}, metatable[base+1]) 
-  for line, pos, count in rdr do
+  if record._init then record:_init() end
+  for line, pos, subcount in rdr do
     local lev = tonumber(line:match"%s*%S+") 
+    if not lev then 
+      print(line)
+      msg:append(Error,"line does not start with valid level number")
+    end
     if lev<=base then
       rdr:reread(line)
       break
@@ -627,10 +644,12 @@ end
 -- * If record[tag] and 'pat' are both tables, the test succeeds if the
 -- recursive call record[tag]:test(tag) does.
 -- If none of the above apply, the test fails.
+-- If 'tag' is 'lifespan', '-' in 'pat' stands for itself, it is not magic.
 RECORD.test = function(record,program)
   for tag,pat in pairs(program) do 
     local rec = record[tag]
     if not rec then return end
+    if tag=='lifespan' then pat=pat:gsub("%%?%-","%%-",1) end
     if type(rec)=='function' then 
       local result = rec(record)
       if type(pat) == 'boolean' then
@@ -710,6 +729,17 @@ RECORD.to = function(record,data)
 end
 FIELD.to = RECORD.to
 ITEM.to = RECORD.to
+
+GEDCOM.message = function(ged,...)
+   ged.msg:append(tconcat({...},' '))
+end 
+
+RECORD.message = function(record,...)
+  assert(record.prev)
+  record.prev:message((record.key or record.tag),...)
+end
+FIELD.message = RECORD.message
+ITEM.message = RECORD.message
 
 --- non-method `lineno` that works at all levels
 lineno = function(subitem)
@@ -859,7 +889,13 @@ end
 
 -- Adds fields to a DATE record
 DATE._init = function(date)
-  date._year, date._month, date._day, date._status = parse_date(date.data) 
+  if not date.data:match"%S" then return end
+date._year, date._month, date._day, date._status = parse_date(date.data) 
+  if not date._year then 
+    if not date._done then date:message(date._month) end
+    date._month, date._day, date._status = nil 
+  end
+  date._done=true
 end
 
 DATE.day = function(date)
@@ -900,7 +936,7 @@ DATE.compare = function(date1,date2)
     date1:year(), date1:month(), date1:day(), date1:status()
   local   year2,        month2,        day2,        status2 =  
     date2:year(), date2:month(), date2:day(), date2:status()
-  if not year1 and year2 then return nil end
+  if not (year1 and year2) then return nil end
   local compare
 -- calculate comparison ignoring qualifiers
   if year1<year2 then compare=-1
@@ -943,8 +979,8 @@ end
 
 ------ NAME functions
 
-    do
 local name_pattern = '^([^/]-)%s*/([^/]+)/%s*([^/]*)$'
+
 NAME.name = function(name,capitalize,omit_surname)
   local pre, surname, post = name.data:match(name_pattern)
   if not pre then return name.data end
@@ -958,7 +994,6 @@ end
 INDI.name = function(indi,capitalize,omit_surname)
   return indi.NAME and indi.NAME:name(capitalize,omit_surname)
 end
-    end
 
 ------------------ Constructors and maintainers ---------------------
 
@@ -1027,6 +1062,16 @@ FAM.wife = function(fam)
   if wife then return fam.prev:indi(wife.data) end
 end
 
+FAM.surname = function(fam)
+  local surname = fam.SURN and fam.SURN.data
+  if surname then return surname end
+  local husband = fam:husband()
+  surname = husband and husband:surname()
+  if surname then return surname end
+  local wife = fam:wife()
+  return wife and wife:surname()
+end
+
 --- for child,k in fam:children() do
 FAM.children = function(fam)
   local iter = fam:tagged"CHIL"
@@ -1046,7 +1091,7 @@ FAM.member = function(fam,key)
 end
 
 INDI.sex = function(indi)
-  return indi.SEX.data
+  return indi.SEX and indi.SEX.data
 end
 
 INDI.male = function(indi)
@@ -1064,17 +1109,24 @@ INDI.parents = function(indi)
   end
 end
 
-INDI.father = function(indi)
+INDI.checkname = function(indi,known)
+  if not indi then return end
+  local name = indi:refname()
+  if known and (name:match"Unknown" or name:match"Anonymous") then return end
+  return indi
+end
+
+INDI.father = function(indi,known)
   local parents = indi:parents() 
   if parents then 
-    return parents:husband()
+    return INDI.checkname(parents:husband(),known)
   end
 end
 
-INDI.mother = function(indi)
+INDI.mother = function(indi,known)
   local parents = indi:parents() 
   if parents then
-    return parents:wife()
+    return INDI.checkname(parents:wife(),known)
   end
 end
 
@@ -1106,13 +1158,7 @@ INDI.children = function(indi,typ)
     for child in fam:children() do
       children[#children+1] = child
       if not child:birthyear() then
-        year = year+1
-        msg:append(Warning,
-        "In family %s, spurious birth year %s has been allocated to %s",
-        fam.key,year,child:name(true))
-        if child.BIRT then child.BIRT.DATE = {data=tostring(year)}
-        else child.BIRT = {DATE = {data=tostring(year)}}
-        end
+      child:message(("No birthyear for %s %s"):format(child.key,child:name()))
       end
     end
   end
@@ -1136,22 +1182,29 @@ INDI.families = function(indi)
   end
 end
 
-INDI.birthyear = function(INDI)
-  local date = INDI:birthdate()
+INDI.birthyear = function(indi)
+  local date = indi:birthdate()
+  if not date then return nil end
+-- first try '_year', otherwise call 'year' method if any
+  local year = date._year or date.year and date:year()
+  return year
+end
+
+INDI.birthdate = function(indi)
+  return indi.BIRT and indi.BIRT.DATE
+end
+
+INDI.deathyear = function(indi)
+  local date = indi:deathdate()
   return date and date:year()
 end
 
-INDI.birthdate = function(INDI)
-  return INDI.BIRT and INDI.BIRT.DATE
+INDI.deathdate = function(indi)
+  return indi.DEAT and indi.DEAT.DATE
 end
 
-INDI.deathyear = function(INDI)
-  local date = INDI:deathdate()
-  return date and date:year()
-end
-
-INDI.deathdate = function(INDI)
-  return INDI.DEAT and INDI.DEAT.DATE
+INDI.surname = function(indi)
+  return indi.NAME.data:match "/(.*)/"
 end
 
 --- A name with vital years in order to aid identification
@@ -1170,26 +1223,45 @@ INDI.lifespan = function(indi)
   if #lst>1 then return '(' .. tconcat(lst) ..")" end
 end 
 
+FAM.refname = function(fam)
+  local buf = {}
+  local husband = fam:husband()
+  local wife = fam:wife()
+  append(buf,husband and husband:name(true))
+  append(buf,'x')
+  append(buf,wife and wife:name(true))
+  return tconcat(buf," ")
+end
+
 ---------- GEDCOM Toolkit functions ----------
 
+--- Find furthest forefather, omitting stubs.
 INDI.forefather = function(indi)
   local progenitor,level = indi,0
   repeat 
     local prog = progenitor:father()
-    if not prog then return progenitor,level end
+    if not prog or not prog.FAMS then return progenitor,level end
     progenitor, level = prog,level+1
   until false
 end
 
 --- find male person with most generations of descendants
-GEDCOM.alpha = function(gedcom)
+GEDCOM.alpha = function(gedcom,surname)
   local main
   local level = 0
-  for indi in gedcom:tagged"INDI" do 
-    local prog, lev = indi:forefather()
-    if lev>level then
-      main,level = prog,lev
-    end
+  surname = surname:upper()
+  for indi in gedcom:tagged"INDI" do
+    local indi_surname = indi.surname and indi:surname()
+    if indi_surname then 
+      if indi_surname:upper() == surname then
+        local prog, lev = indi:forefather()
+        if lev>level then
+          main,level = prog,lev
+        end
+      end
+    else
+      print("Individual has no surname",indi.NAME.data)
+    end 
   end
   return main
 end
@@ -1311,7 +1383,8 @@ end
 
 -- Export the utilities and metatables. 
 local util = {reader=reader, Record=Record, level=level, tagdata=tagdata, 
-  keytagdata=keytagdata, assemble=assemble, Message=Message }
+  keytagdata=keytagdata, assemble=assemble, Message=Message, 
+  key_pattern = key_pattern, name_pattern = name_pattern }
 
 meta = { GEDCOM=GEDCOM, RECORD=RECORD, FIELD=FIELD, ITEM=ITEM, 
    INDI=INDI, FAM=FAM, DATE=DATE, NAME=NAME, MESSAGE=MESSAGE }

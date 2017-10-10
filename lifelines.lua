@@ -113,10 +113,6 @@ end
 
 -- implemented as GEDCOM functions: indi forindi firstindi lastindi
 -- implemented but not in lifelines: spousein
-INDI.surname = function(indi)
-  return indi.NAME.data:match "/(.*)/"
-end
-
 INDI.givens = function(indi)
   return indi.NAME.data:match "^[^%/]*"
 end
