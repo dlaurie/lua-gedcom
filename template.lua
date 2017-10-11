@@ -1,8 +1,9 @@
 --- template.lua  © Dirk Laurie  2017 MIT License like that of Lua 5.3
 -- Functions involving GEDCOM templates.
-
 -- See 'gedcom.lua' for the documentation of GEDCOM objects. This module
 --    extends functionality by adding methods to the GEDCOM table.
+-- BUGS
+-- - Can only append records to a parent; can't insert or delete them.
 
 --[[ ----------------------------- Templates ------------------------------
 
@@ -32,9 +33,8 @@ are given when the application is defined.
 local gedcom = require "gedcom.gedcom"
 
 local glob, meta, util = gedcom.glob, gedcom.meta, gedcom.util
-local GEDCOM, RECORD, FIELD, ITEM, INDI, FAM, DATE = 
-  meta.GEDCOM, meta.RECORD, meta.FIELD, meta.ITEM, meta.INDI, meta.FAM, 
-  meta.DATE
+local GEDCOM, RECORD, INDI, FAM, DATE = 
+  meta.GEDCOM, meta.RECORD, meta.INDI, meta.FAM, meta.DATE
 local name_pattern = util.name_pattern
 local Message = util.Message 
 local lineno, tags, parse_date = glob.lineno, glob.tags, glob.date
@@ -112,7 +112,8 @@ FAM.wifename = function(fam)
 end
 
 GEDCOM.update = function(ged,journal)
-  journal.source = journal.source or ged.HEAD.SOUR.data
+  journal.source = journal.source or 
+    ged.HEAD and ged.HEAD.SOUR and ged.HEAD.SOUR.data
   if not journal.source then
     print"Die bron van die GEDCOM kon nie vasgestel word nie."
     journal.source = "Onbekend"
@@ -145,7 +146,7 @@ GEDCOM.update = function(ged,journal)
     if #list~=1 then
       print(#list.." matching entries for query "..descr)
       for k,v in ipairs(list) do print(v.key,v:refname()) end
-      print"Skipping this update record"
+      print"!!! Skipping this update record"
       break
     end
     local record=list[1]
@@ -166,7 +167,7 @@ RECORD.update = function(record,entry,ged)
     if tag==tag:upper() then
       local field = record[tag]
       if not field then 
-        field = FIELD.new(tag,'')
+        field = RECORD.new(nil,tag,'')
         record[tag] = field
       end
       if type(value)=='string' then
@@ -189,8 +190,6 @@ RECORD.update = function(record,entry,ged)
 end
     end  -- closure for RECORD.update
 
-FIELD.update = RECORD.update
-
 RECORD.assign = function(record,tag,data)
 print(tag)
   local top,tail = tag:match"([^.]+)%.(.*)"
@@ -200,8 +199,6 @@ print(tag)
     record[top]:assign(tail,data)
   end
 end
-FIELD.assign = RECORD.assign
-ITEM.assign = RECORD.assign
 
 INDI.newrelative = function(indi,entry,tag,surname)
   local msg = indi.msg or Message()
@@ -246,22 +243,22 @@ INDI.newfamily = function(indi,spouse)
   msg:append("Creating new family %s x %s",indi:name(),spouse:name())
   local key = newkey("F",ged.FAM,"")
   local fam = RECORD.new(key,"FAM")
-  indi:append(FIELD.new("FAMS",key_format:format(key)))
-  spouse:append(FIELD.new("FAMS",key_format:format(key)))
+  indi:append(RECORD.new(nil,"FAMS",key_format:format(key)))
+  spouse:append(RECORD.new(nil,"FAMS",key_format:format(key)))
   fam.MARR = spouse.MARR
   spouse.MARR = nil
   local role, partner
   if indi.SEX.data:match"M" then role, partner = 'HUSB', 'WIFE'
     else role, partner = 'WIFE', 'HUSB'
   end
-  fam:append(FIELD.new(role,key_format:format(indi.key)))
-  fam:append(FIELD.new(partner,key_format:format(spouse.key)))  
+  fam:append(RECORD.new(nil,role,key_format:format(indi.key)))
+  fam:append(RECORD.new(nil,partner,key_format:format(spouse.key)))  
   return fam
 end
 
 FAM.newchild = function(fam,child)
-  child:append(FIELD.new('FAMC',key_format:format(fam.key)))
-  fam:append(FIELD.new('CHIL',key_format:format(child.key)))
+  child:append(RECORD.new(nil,'FAMC',key_format:format(fam.key)))
+  fam:append(RECORD.new(nil,'CHIL',key_format:format(child.key)))
 end
 
 --[[ APPLICATION: validation of a GEDCOM file
@@ -431,7 +428,5 @@ GEDCOM.validate = function(gedcom,template,whitelist,synonyms)
 end
 
 RECORD.validate = GEDCOM.validate
-FIELD.validate = GEDCOM.validate
-ITEM.validate = GEDCOM.validate
 
 

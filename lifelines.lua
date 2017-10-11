@@ -49,8 +49,8 @@ end
 local gedcom = require "gedcom" or require "gedcom.gedcom"
 
 local meta = gedcom.meta
-local GEDCOM, RECORD, FIELD, ITEM = 
-  meta.GEDCOM, meta.RECORD, meta.FIELD, meta.ITEM
+local GEDCOM, RECORD = 
+  meta.GEDCOM, meta.RECORD
 local Message = gedcom.util.Message
 
 --- Tag-specific method tables

@@ -4,71 +4,59 @@
 --   so tested)
 -- The module returns a table with fields: `new, read, help, util, glob, meta`.
 -- Look at 'help' for more information.
+-- BUGS: 
+--   Conversion from ANSI/ANSEL to UTF-8 is not supplied.
 
 local help = [[
 The module returns a table, here called `gedcom`, containing:
   `help` This help string.
-  'new`  A function which constructs an GEDCOM container and optionally 
+  'new`  A function which constructs an empty GEDCOM container and optionally 
    initializes custom fields.
   `read` A function which reads a GEDCOM file into a new container, here 
     called `ged`, and returns a message, here called `msg`, suitable for 
     writing to a log file. If construction failed, `ged` is nil and `msg` 
     gives the reason for failure.
-  `meta` The metatables of GEDCOM-related objects: GEDCOM, RECORD, FIELD, 
-    ITEM, containing methods and metamethods.
+  `meta` The metatables of GEDCOM-related objects: GEDCOM, RECORD, MESSAGE 
+    and tag-specified metatables like INDI, FAM and DATE. 
   `glob` A few non-member functions that might be useful outside this file.
   `util` A table containing utility functions. They are provided mainly 
-    for the convenience of code maintainers, and as documented briefly 
+    for the convenience of code maintainers, and are documented briefly 
     below in LDoc format compatible with the module `ihelp` available 
     from LuaRocks.
 
 `gedcom.read` takes one argument, which must be the name of an existing 
-GEDCOM file. Thus you will normally have the following lines in your 
-application:
+GEDCOM file. The extension '.ged' may be omitted, but other extensions, 
+including '.GED', must be supplied. Thus you will normally have the following 
+lines in your application:
 
     gedcom = require "gedcom"
-    ged, msg = gedcom.read (GEDFILE) 
+    ged, msg = gedcom.read(GEDFILE) 
 
-GEDCOM lines up to level 3 are parsed according to the rule that each line 
-must have a level number, may have a key, must have a tag, and must have 
-data (but the data may be empty). This is where it stops. At level 4 and 
-deeper, only the level number is examined.  
+GEDCOM lines are parsed according to the rule that each line must have a level 
+number, may have a key, must have a tag, and must have data (but the data may 
+be empty). Every line except those with tag CONC or CONT is represented in Lua
+by an object called a record. See RECORD.help.
 
-There are five types of GEDCOM-related objects, container, record, field, 
-item, subitem. More details on them is available in GEDCOM.help, RECORD.help,
-FIELD.help and ITEM.help.
+CONC and CONT lines do not get there own records. Their contents is 
+concatenated (in the case of CONT, with an intervening a newline) to the data 
+of the main line to which they belong. If the entire file is thought of as one 
+string, the effect is as if the strings "\nCONC " and "\nCONT " have been 
+replaced by "" and "\n", respectively. 
 
-All objects except containers have the following entries:
-   `key`: a GEDCOM key located inside at-signs between the level number and 
-the tag on a line in the GEDCOM file such as `I1`, `F10` etc. May be nil.
-   `tag`: a GEDCOM tag such as INDI, DATE etc.  
-   `data`: whatever remains of the line after the tag. May be nil. If present
-and non-empty, the first character is not a blank.
-   `line`: the original line as read in, except that CONC and CONT lines 
-are not kept as separate entities, but have their data appended (in the case
-of CONT, joined by a newline) to the data of the main line to which they 
-belong. In CONC and CONT lines, 'data' may have leading blanks, i.e. only 
-one blank is assumed to separate 'tag' from 'data'. 
-   `prev`: the higher-level object to which the object belongs.
-   `size`: the number of lines in the original GEDCOM file that the object
-occupies. May be nil (object not from a file).
-   `pos`: 
-   `count`: 
-   `msg`: a message object. May be nil. See MESSAGE.help.
+The GEDCOM file is stored in an object called a _container_, an annotated 
+array of Level 0 records. See GEDCOM.help.
 
-All types except subitems have an __index metamethod such that you can say 
-`ged.HEAD.CHAR.data`, `ged.I1.NAME`, etc. 
-
-Extended indexing is read-only in the sense that you can't replace an 
-object. Nothing stops you from assigning a value to e.g. `ged.I1`, but 
-that value will shadow the the original record that you retrieved as 
-`ged.I1`. If you then assign nil to `ged.I1`, the original will reappear.]]
+Containers and records have an __index metamethod such that you can say 
+`ged.HEAD.CHAR.data`, `ged.I1.NAME`, etc. This indexing is read-only in the 
+sense that you can't replace an object that way. Nothing stops you from 
+assigning a value to e.g. `ged.I1`, but that value will shadow the the 
+original record that you retrieved as `ged.I1`. If you then assign nil to 
+`ged.I1`, the original will reappear.]]
 
 -- initialize metatables
 local GEDCOM = {__name="GEDCOM container"}
 local RECORD = {__name="GEDCOM record"}
-local FIELD = {__name="GEDCOM field"}
-local ITEM = {__name="GEDCOM item"}
+local MESSAGE = {__name="GEDCOM message list"}
 local INDI = {}
 local FAM = {}
 local DATE = {}
@@ -76,20 +64,18 @@ local NAME = {}
 local CHIL = {}
 local HUSB = {}
 local WIFE = {}
-local MESSAGE = {__name="GEDCOM message list"}
 
 GEDCOM.help =[[
-- A GEDCOM _container_ is a table (metatable GEDCOM) containing GEDCOM 
-records at entries 1,2,...,. It does not have the entries that all the 
-others have. Instead, it has:
+A GEDCOM _container_ is a table (metatable GEDCOM) containing GEDCOM records 
+as items 1,2,...,. and the following fields:
 
-  INDI        A table in which each entry gives the number of the record 
+  INDI        A table in which each field gives the number of the record 
               defining the individual with that key (at signs stripped off).
-  FAM         A table in which each entry gives the number of the record
+  FAM         A table in which each field gives the number of the record
               defining the family with that key (at signs stripped off). 
-  OTHER       A table in which each entry gives the number of the record
-              defining any other record with that key (at signs stripped off).
-  firstrec    A table in which each entry is the number of the first 
+  OTHER       A table in which each field gives the number of the record
+              defining a keyed record not tagged INDI or FAM.
+  firstrec    A table in which each field is the number of the first 
               record with that tag (unkeyed records only).
   _INDI       A list of records with tag `INDI` in their original order.
   _FAM        A list of records with tag `FAM` in the original order.
@@ -106,17 +92,36 @@ Indexing of a GEDCOM container is extended in the following ways:
      of INDI, FAM and OTHER.)
   2. Tags. Any tag in an _unkeyed_ Level 0 record can be used as an index
      into the container, and will retrieve the _first_ unkeyed record 
-     bearing that tag. 
+     bearing that tag, as given in `firstrec`.
   3. Methods. Functions stored in the GEDCOM metatable are accessible in
      object-oriented (colon) notation, and all fields stored there are 
      accessible by indexing into the container, except when shadowed.
 ]]
-RECORD.help = [[
-A GEDCOM _record_ is a table (metatable `RECORD`) in which `line` contains 
-a Level 0 line from a GEDCOM file. It may, at entries 1,2,..., contain 
-fields. This is the only type in which `key` is usually not nil.
 
-Indexing of records and lower-level GEDCOM objects is extended as follows:
+RECORD.help = [[
+A GEDCOM _record_ is a table (metatable RECORD) in which `line` contains 
+a Level 0 line from a GEDCOM file. It may as items 1,2,..., contain 
+subrecords. 
+Records have the following fields:
+   `line`: the original line as read in, but with `CONC` and `CONC` taken
+into account as described in gedcom.help.
+   `key`: a GEDCOM key such as `I1`, `F10` etc, located inside at-signs 
+between the level number and the tag on a line in the GEDCOM file. Usually 
+but not necessarily non-nil only at Level 0.
+   `tag`: a GEDCOM tag such as INDI, DATE etc. Uppercase and underscores only.
+   `data`: whatever remains of `line` after the first space following the tag. 
+May be empty but not nil. If non-empty, the first character is not a blank.
+   `prev`: the higher-level record or container to which the record belongs.
+   `msg`: a message object. May be nil. See MESSAGE.help.
+
+If the record was read from a file, it also has:
+
+   `size`: the number of actual lines in the original GEDCOM file that the 
+record occupies.    
+   `pos`: offset in lines from the start of `prev`
+   `count`: offset in bytes from the start of `prev`
+
+Indexing of records is extended as follows:
   1. Tags. Any tag in a field or item can be used as an index into the object, 
      and will retrieve the _first_ record bearing that tag. This access is 
      memoized: there will be a key equal to that tag in the record after the 
@@ -127,26 +132,6 @@ Indexing of records and lower-level GEDCOM objects is extended as follows:
      a table of methods taking records etc with that tag as first argument.
      E.g. methods in `gedcom.meta.INDI` are available to records with tag
      `INDI` but not to other GEDCOM records.]]
-FIELD.help = [[
-A GEDCOM _field_ is a table (metatable `FIELD`) in which `line` contains 
-a Level 1 line from a GEDCOM file. It may, at entries 1,2,..., contain items.]]
-ITEM.help = [[
-A GEDCOM _item_ is a table (metatable `ITEM`) in which `line` contains a 
-Level 2 line from a GEDCOM file. It may, at entries 1,2,..., contain subitems.
-
-A GEDCOM _subitem_ is a table (no metatable) in which `line` contains 
-a Level 3 line from a GEDCOM file. It may also have an entry `lines` which 
-is an array of strings containing at least one line at level 4 or beyond.]]
-
--- declare some utilities as upvalues
-local append, tconcat, tsort, tremove = 
-  table.insert, table.concat, table.sort, table.remove
-local meta  -- forward declaration of metatable collection 
-local -- forward declaration of utilities
-   Record, reader, level, tagdata, keytagdata, to_gedcom, lineno, tags,
-   tagend
--- forward declaration of private methods
-local _read, parse_date 
 
 MESSAGE.help = [[
 Customizable messaging. 
@@ -176,13 +161,23 @@ is not nil.
 Msg:concat(delim) returns the concatenation of appended messages, using the
 specified delimiter (default: newline).]]
 
+-----------------------------------------------------------------------------
+
 -- Usage of 'assert' in this package is to catch program errors. For example,
 -- if a line in a GEDCOM file has no tag, it is a data error and is reported
 -- via a Message, but if a line in an already constructed GEDCOM object has
 -- no tag, it is a program error since those lines should have been caught
 -- at an earlier stage.
 
-local metatable = {[0]=GEDCOM, [1]=RECORD, [2]=FIELD, [3]=ITEM}
+-- declare some utilities as upvalues
+local append, tconcat, tsort, tremove = 
+  table.insert, table.concat, table.sort, table.remove
+local meta  -- forward declaration of metatable collection 
+local -- forward declaration of utilities
+   Record, reader, level, tagdata, keytagdata, to_gedcom, lineno, tags,
+   tagend
+-- forward declaration of private methods
+local _read, parse_date 
 
 --- See MESSAGE.help
 local Message = function(translate)
@@ -196,7 +191,9 @@ local Message = function(translate)
     },
     MESSAGE)
   end
+
 local Error, Warning = true, false
+
 MESSAGE.append = function(msg,...)
   local status, lineno, message = ...
   local tail=4
@@ -225,10 +222,13 @@ MESSAGE.append = function(msg,...)
     msg:_error(fmsg) 
   end
 end;
+
 MESSAGE.concat = function (msg,delim)
   return tconcat(msg,delim or "\n")
 end 
+
 MESSAGE.__index = MESSAGE
+
 MESSAGE._error = function(msg,message)
   local count = (msg.count[message] or 0) + 1
   msg.count[message] = count
@@ -247,13 +247,9 @@ end
 local function assemble(object)
   if type(object)=="string" then return object end
   local buffer = {}
-  append(buffer,object.line)  -- allows 
-  if object.lines then 
-    append(buffer,tconcat(object.lines,"\n"))
-  else 
-    for k=1,#object do
-      append(buffer,assemble(object[k]))
-    end
+  append(buffer,object.line)   
+  for k=1,#object do
+    append(buffer,assemble(object[k]))
   end
   return tconcat(buffer,"\n")
 end
@@ -342,6 +338,10 @@ local gedcom_read = function(filename)
   end
   if filename:match"%S" then 
     gedfile, errmsg = io.open(filename) 
+    if not gedfile and not filename:match"%..+" then 
+      filename = filename..".ged"
+      gedfile, errmsg = io.open(filename) 
+    end
   end
   if not gedfile then return nil, errmsg end
 -- we now have a freshly-opened gedfile
@@ -353,7 +353,12 @@ local gedcom_read = function(filename)
     local rec = Record(rdr,0,ged) 
     ged:append(rec)
   until not rec
-  msg:append("%s lines, %s records",ged[#ged].pos,#ged)
+  msg:append("%s bytes, %s lines, %s records, %s individuals, %s families",
+    ged[#ged].pos + #ged[#ged].line,
+    ged[#ged].count + ged[#ged].size - 1,
+    #ged,
+    #ged._INDI,
+    #ged._FAM)
   gedfile:close()
   return ged, msg:concat()
 end 
@@ -380,11 +385,13 @@ GEDCOM.__index = function(ged,idx)
     "Invalid key type for GEDCOM container: "..type(idx))
 end
 
--- private methods of a GEDCOM container
+-- methods of a GEDCOM container
 
 --- Append a record to a GEDCOM container
 GEDCOM.append = function(ged,rec)
   if not rec then return end
+  assert(level(rec.line)==0,
+    "Can't append this level to a container: "..rec.line)
   rec.prev = rec.prev or ged
   local firstrec = ged.firstrec
   local k = #ged + 1
@@ -400,8 +407,6 @@ GEDCOM.append = function(ged,rec)
   end
   ged[k] = rec
 end  
-
---- public methods of a GEDCOM container
 
 --- write GEDCOM container to a file
 -- ged:write(filename,options)
@@ -471,8 +476,6 @@ GEDCOM.tagged  = function(gedcom,pattern)
   end
 end
 RECORD.tagged = GEDCOM.tagged
-FIELD.tagged = GEDCOM.tagged
-ITEM.tagged = GEDCOM.tagged 
 
 --- for field[,cap1[,cap2,...]] in record:withdata(pattern) do
 -- loop over all fields that whose 'data' matches the specified pattern
@@ -488,8 +491,6 @@ RECORD.withdata = function(record,pattern)
     until not v
   end
 end
-FIELD.withdata = RECORD.withdata
-ITEM.withdata = RECORD.withdata 
 
 --- build an index of records keyed by the data of a specified tag,
 --  or by the value of a given function applied to the record.
@@ -540,12 +541,7 @@ end
 --- object, message = Record(rdr,base)
 --  Reads one GEDCOM object at level `base`, getting its input from the
 --  reader `rdr` (see `reader`). One return value may be nil, but not both.
---    record = Record(rdr,0)
---    field = Record(rdr,1,record)
---    item = Record(rdr,2,field)
---    subitem = Record(rdr,3,item)
 Record = function(rdr,base,prev)
-  assert(base<=3,"No subdivision supported past level 3")
   local msg=Message()
   local line,pos,count,key,tag,data
   repeat
@@ -575,8 +571,8 @@ Record = function(rdr,base,prev)
     end  
   until line
   local lines = {}
-  local record = setmetatable( {line=line,lines=lines,pos=pos,key=key,tag=tag,
-     data=data,msg=msg,prev=prev,size=1,count=count}, metatable[base+1]) 
+  local record = setmetatable( {line=line,pos=pos,key=key,tag=tag,
+     data=data,msg=msg,prev=prev,size=1,count=count}, RECORD) 
   if record._init then record:_init() end
   for line, pos, subcount in rdr do
     local lev = tonumber(line:match"%s*%S+") 
@@ -591,19 +587,18 @@ Record = function(rdr,base,prev)
     append(lines,line)
     record.size = record.size+1
   end
-  if #lines>0 and base<3 then 
+  if #lines>0 then 
     local subrdr = reader(lines)
     repeat
       local subrec = Record(subrdr,base+1,record)
       record[#record+1] = subrec
     until not subrec
   end
-  if #lines==0 or base<3 then record.lines = nil end
   if #msg==0 then record.msg = nil end   -- delete empty messages
   return record
 end
 
---- RECORD, FIELD and ITEM methods
+--- RECORD methods
 
 RECORD.__index = function(record,idx)
 -- if it isn't there, it isn't there
@@ -675,50 +670,32 @@ end
 
 -- If options.prune is specified, only lines allowed by 'template'
 -- are written.
-ITEM.to_gedcom = function(item,file,options,template)
+RECORD.to_gedcom = function(item,file,options,template)
   template = template or {}
   to_gedcom(file,item.line,options)
   for _,subitem in ipairs(item) do
     local subtemplate = template[item.tag]
     if subtemplate or not options.prune then   
       to_gedcom(file,subitem.line,options)
-      if subitem.lines then 
-        for _,line in ipairs(subitem.lines) do
-          to_gedcom(file,line,options)
-        end
-      end
     end   
   end
 end
 
-RECORD.to_gedcom = GEDCOM.to_gedcom
-FIELD.to_gedcom = GEDCOM.to_gedcom
-
-FIELD.test = RECORD.test
-ITEM.test = RECORD.test
-
-FIELD.__index = RECORD.__index
-ITEM.__index = RECORD.__index
-
-ITEM._tags = function(item)
-  return item.prev:_tags() .. "." .. item.tag
+RECORD._tags = function(RECORD)
+  if record.prev._tags then
+    return record.prev:_tags() .. "." .. record.tag
+  else return record.tag
+  end
 end
-
-FIELD._tags = ITEM._tags
-RECORD._tags = function(record)
-  return record.tag
-end
+tags = RECORD._tags
 
 RECORD._lineno = function(record)
-  return record.count
+  if record.prev._lineno then
+    return record.prev:_lineno() + record.count 
+  else return record.count
+  end
 end
-
-FIELD._lineno = function(field)
-  if not field.count then return nil end
-  return field.prev:_lineno() + field.count
-end
-
-ITEM._lineno = FIELD._lineno
+lineno = RECORD._lineno
 
 --- Change 'data', also updating `line`.
 RECORD.to = function(record,data)
@@ -727,8 +704,6 @@ RECORD.to = function(record,data)
   record.data = data
   record.line = record.line:sub(1,pos-1) .. ' ' .. data
 end
-FIELD.to = RECORD.to
-ITEM.to = RECORD.to
 
 GEDCOM.message = function(ged,...)
    ged.msg:append(tconcat({...},' '))
@@ -738,32 +713,10 @@ RECORD.message = function(record,...)
   assert(record.prev)
   record.prev:message((record.key or record.tag),...)
 end
-FIELD.message = RECORD.message
-ITEM.message = RECORD.message
 
---- non-method `lineno` that works at all levels
-lineno = function(subitem)
-  if subitem._lineno then return subitem:_lineno()
-  elseif not subitem.count then return 0
-  elseif subitem.prev then 
-    return subitem.prev:_lineno() + subitem.count
-  else return subitem.count
-  end
-end
-
---- non-method `tags` that works at all levels
-tags = function(subitem)
-  if subitem._tags then return subitem:_tags()
-  elseif subitem.prev then 
-    return subitem.prev:_tags() .. subitem.tag
-  else return subitem.tag
-  end
-end
-
---- Undocumented feature: `-ged.HEAD` etc puts together a record, etc.
+--- Undocumented feature: `-ged.HEAD` etc puts together a record or message.
+-- Not a whole GEDCOM.
 RECORD.__unm = assemble
-FIELD.__unm = assemble
-ITEM.__unm = assemble
 MESSAGE.__unm = assemble
 
 --- define forward-declared utilities
@@ -999,40 +952,42 @@ end
 
 local key_pattern = "@(.+)@"
 
+--- construct a new record from its components key (may be nil), tag,
+-- data (defaults to '')
 RECORD.new = function(key,tag,data)
-  data = data or ''
-  local line = {0}
-  line[#line+1] = '@'..key..'@'
-  line[#line+1] = tag
-  line[#line+1] = data
-  return setmetatable ({key=key, tag=tag, data=data, 
-    line = tconcat(line," ")}, RECORD)
+  local record = {key=key, tag=tag, data=data}
+  record.line = RECORD.join(record)
+  return setmetatable (record, RECORD)
 end
 
-FIELD.new = function(tag,data)
-  data = data or ''
-  local line = {1}
+--- join the components of a record: key (may be nil), tag (must not be nil) 
+-- and data (defaults to ''). Level is nominally 0 but will be set to its
+-- correct value whan the record is appended to its parent.
+RECORD.join = function(record)
+  local tag=record.tag
+  assert(type(tag)=='string' and tag==tag:upper(),
+    "bad tag in RECORD.join, expected uppercase string, got "..tostring(tag))
+  local data = record.data or ''
+  local level = 0
+  local key = record.key
+  local line = {level}
+  if key then 
+    line[#line+1] = '@'..key..'@'
+  end
   line[#line+1] = tag
   line[#line+1] = data
-  return setmetatable ({tag=tag, data=data, line=tconcat(line," ")}, FIELD)
-end
- 
-ITEM.new = function(tag,data)
-  data = data or ''
-  local line = {2}
-  line[#line+1] = tag
-  line[#line+1] = data
-  return setmetatable ({tag=tag,data=data,line=tconcat(line," ")}, ITEM)
+  return tconcat(line," ") 
 end
 
+--- Append a field to this record. The parent and level number of the field
+-- are set to the correct linked values.
 RECORD.append = function(record,field)
   field.prev = record
+  field.line = level(record.line)+1 .. ' ' .. field.line:match"%S+%s+(.*)"
   record[#record+1] = field
 end
-FIELD.append = RECORD.append
-ITEM.append = RECORD.append
 
------------- additional GEDCOM, RECORD and FIELD utilities -------------
+------------ additional GEDCOM and RECORD -------------
 
 -- Many of these functions logically belong in lifelines.lua, but are
 -- needed already.
@@ -1295,8 +1250,8 @@ INDI.descendants = function(indi,ged)
   return ged
 end
 
---- Ensure that all families referred to in individual entries exist
--- and refer to that indiviual.
+--- Ensure that all families referred to in INDI records exist and refer to 
+-- that individual.
 GEDCOM.fix_families = function(ged)
   for indi in ged:tagged"INDI" do
     for field in indi:tagged"FAM?" do
@@ -1312,7 +1267,7 @@ GEDCOM.fix_families = function(ged)
           else role = 'WIFE'
           end
         end
-        fam:append(FIELD.new(role,'@'..indi.key..'@'))
+        fam:append(RECORD.new(nil,role,'@'..indi.key..'@'))
       end
     end
   end      
@@ -1386,7 +1341,7 @@ local util = {reader=reader, Record=Record, level=level, tagdata=tagdata,
   keytagdata=keytagdata, assemble=assemble, Message=Message, 
   key_pattern = key_pattern, name_pattern = name_pattern }
 
-meta = { GEDCOM=GEDCOM, RECORD=RECORD, FIELD=FIELD, ITEM=ITEM, 
+meta = { GEDCOM=GEDCOM, RECORD=RECORD, 
    INDI=INDI, FAM=FAM, DATE=DATE, NAME=NAME, MESSAGE=MESSAGE }
 
 local glob = { lineno=lineno, tags = tags, methods = methods, 
