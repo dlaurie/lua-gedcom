@@ -8,16 +8,16 @@
 --[[ ----------------------------- Templates ------------------------------
 
 A GEDCOM template is a table constructed so that it can be indexed in the same 
-the way that GEDCOM records are (thanks to metatable magic), e.g.
+the way that (thanks to metatable magic) GEDCOM records are, e.g.
 
   { NAME = 'Robert Naylor /LAURIE/',
       BIRT = {
         PLAC = 'Ahmednuggur, India',
-        DATE = '9 Aug 1823 };
+        DATE = '9 Aug 1823' };
       DEAT = {
         PLAC = 'Lyttelton, New Zealand',
         DATE = '21 Jul 1859' };
-      NOTE = 'Lived at the Cape or Good Hope 1850-1858 and founded a family'
+      NOTE = 'Lived at the Cape of Good Hope 1850-1858 and founded a family'
   }
 
 This example shows a template being used as an alternative representation for
@@ -31,10 +31,11 @@ are given when the application is defined.
 --]]
 
 local gedcom = require "gedcom.gedcom"
+require "gedcom.lifelines"
 
 local glob, meta, util = gedcom.glob, gedcom.meta, gedcom.util
-local GEDCOM, RECORD, INDI, FAM, DATE = 
-  meta.GEDCOM, meta.RECORD, meta.INDI, meta.FAM, meta.DATE
+local GEDCOM, RECORD, INDI, FAM, DATE, NAME = 
+  meta.GEDCOM, meta.RECORD, meta.INDI, meta.FAM, meta.DATE, meta.NAME
 local name_pattern = util.name_pattern
 local Message = util.Message 
 local lineno, tags, parse_date = glob.lineno, glob.tags, glob.date
@@ -49,6 +50,11 @@ local child_code="^b%d+$"
 
 local Error, Warning = true, false
 
+--- nonblank(s) is s if s is a non-blank string, otherwise false
+local function nonblank(s)
+  return type(s)=='string' and s:match"%S" and s
+end
+
 -- print key-value pairs of table with key matching pattern
 local choose = function(tbl,pattern)
   local choose={}
@@ -60,6 +66,77 @@ local choose = function(tbl,pattern)
   end
   return '{'..tconcat(choose,", ")..'}'
 end
+
+--[[ APPLICATION: creating a template from SAF person data ]]
+
+    do 
+local particles = "VAN DE DER LA LE DU DA TE"
+local particle = {}
+for word in particles:gmatch"%S+" do particle[word]=true end
+NAME.fromSAF = function(saf)
+  local words = {}
+  for word in saf:gmatch"%S+" do
+    if particles[word] then append(words,word:lower())
+    else append(words,word:sub(1,1)..word:gsub(".(.*)",string.lower))
+    end
+  end
+  return tconcat(words,' ')
+end
+    end -- closure of NAME.fromSAF
+
+    do
+local toGEDCOM = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct",
+  "Nov","Dec"}
+DATE.fromSAF = function(saf)
+  local day,month,year = saf:match"(%d?%d?)%.?(%d?%d?)%.?(%d%d%d%d)"
+  if day:match"%S" then
+    return day.." "..toGEDCOM[tonumber(month)].." "..year
+  end
+end
+   end -- closure of DATE.fromSAF
+
+    do
+local evtype = {['*']="BIRT",["~"]="CHR",["%"]="DIV",["+"]="DEAT",
+  ["#"]="BURI"}
+--- Convert an individual record from SAF text notation to a GEDCOM template,
+-- e.g. the template given above corresponds to
+-- "Robert Naylor LAURIE * Ahmednuggur, India 09.08.1823 + Lyttelton, New Zealand 21.07.1859. Lived at the Cape of Good Hope 1850-1858 and founded a family"
+INDI.fromSAF = function(saf)
+-- ASCII substitutes for multibyte symbols
+  local tp = {}
+  saf = saf:gsub("†","+"):gsub("≈","~"):gsub("÷","%"); 
+-- one clause
+  local function fromSAF(clause)
+    local datestart, date, datestop = 
+      clause:match"()(%d?%d?%.?%d?%d?%.?%d%d%d%d)()"
+    local pre, name, post = 
+      clause:match"()(%u[ %u]*%u)()"
+    if date then -- This is an event. There may be a place before and a note
+                 -- after. The note after may be preceded by a period, in
+                 -- which case the note belongs to the record, otherwise it
+                 -- belongs to the event. 
+      local evt,place = clause:sub(1,datestart-1):match"([*~+%#])%s+(.*)"
+      local note,term,endnote = clause:sub(datestop):match"([^.]*)(%.?)%s*(.*)"
+      evt = evtype[evt]
+      tp[evt] = {DATE=DATE.fromSAF(date),PLAC=place,NOTE=nonblank(note)}
+      tp.NOTE = tp.NOTE or nonblank(endnote)
+    elseif name then  -- This is a name.
+      pre, post = clause:sub(1,pre-1), clause:sub(post)
+      name = NAME.fromSAF(name)
+      tp.NAME = pre.."/"..name.."/"..post
+    else
+      print(clause)
+    end
+  end
+  local start = 1
+  for stop in saf:gmatch" ()[*~+%#]" do
+    fromSAF(saf:sub(start,stop-1))
+    start = stop   
+  end
+  fromSAF(saf:sub(start,#saf))
+  return tp
+end
+   end -- closure of INDI.fromSAF
 
 --[[ APPLICATION: updating a GEDCOM file ]]
 
@@ -111,6 +188,25 @@ FAM.wifename = function(fam)
   return wife and wife:name()
 end
 
+--- ged:identify(entry)
+-- If 'entry' describes a unique individual or family, that is the result.
+-- Otherwise returns nil and the list of matches.
+GEDCOM.identify = function(ged,entry)
+  local list 
+  if entry.name or entry.lifespan then 
+    list = ged:find{name=entry.name,key=entry.key,
+      lifespan=entry.lifespan,WWW=entry.WWW}
+  elseif entry.husband or entry.wife then
+    local couple = {entry.husband}   -- can't remember why this is in
+    couple[#couple+1] = entry.wife   -- but maybe it will be useful
+    list = ged:find{husbandname=entry.husband,wifename=entry.wife,
+      key=entry.key,WWW=entry.WWW}
+  end
+  if list and #list == 1 then return list[1]
+  else return nil, list
+  end
+end
+
 GEDCOM.update = function(ged,journal)
   journal.source = journal.source or 
     ged.HEAD and ged.HEAD.SOUR and ged.HEAD.SOUR.data
@@ -134,22 +230,15 @@ GEDCOM.update = function(ged,journal)
     end end
     local descr = choose(entry,"^%l+$")
     if entry.name or entry.lifespan then 
-      list = ged:find{name=entry.name,key=entry.key,
-        lifespan=entry.lifespan,WWW=entry.WWW}
       entry.surname = journal.surname 
-    elseif entry.husband or entry.wife then
-      local couple = {entry.husband}
-      couple[#couple+1] = entry.wife
-      list = ged:find{husbandname=entry.husband,wifename=entry.wife,
-        key=entry.key,WWW=entry.WWW}
     end
-    if #list~=1 then
+    local record,list = ged:identify(entry)
+    if not record then
       print(#list.." matching entries for query "..descr)
       for k,v in ipairs(list) do print(v.key,v:refname()) end
       print"!!! Skipping this update record"
       break
     end
-    local record=list[1]
     msg:append("Updating entry for %s %s",record.key,record:refname())
     record:update(entry,ged)
   until CONTINUE
@@ -159,30 +248,53 @@ end
    do local allowed = {name=true, surname=true, husband=true, wife=true,
         lifespan=true}
 RECORD.update = function(record,entry,ged)
+  assert(type(record)=='table',[[assertion "type(record)=='table'" failed!]])
   local msg = record.msg or Message()
   for tag,value in pairs(entry) do 
-    if type(tag)~='string' then
-      print("Nonstring key "..tostring(tag)) 
-    end
-    if tag==tag:upper() then
+    if tag==1 then
+      record:to(value)
+    elseif type(tag)~='string' then
+      msg:append(Error,"Can't handle tag %s in %s",tag,record.key)
+    elseif tag==tag:upper() then
       local field = record[tag]
       if not field then 
         field = RECORD.new(nil,tag,'')
         record[tag] = field
       end
       if type(value)=='string' then
-      field:to(value)
+        field:to(value)
       elseif type(value)=='table' then 
         field:update(value)
       end
     elseif record.tag=='INDI' and tag:match(spouse_code) then
-      local relative = record:newrelative(value,tag,surname or record:surname())
+      local relative = ged:newrelative(record,value,tag,
+        surname or record:surname())
       ged:append(relative)
       ged:append(record:newfamily(relative,tag))
-    elseif record.tag=='FAM' and tag:match(child_code) then
-      local relative = record:newrelative(value,tag,surname or record:surname())
-      ged:append(relative)
-      record:newchild(relative)   
+    elseif record.tag=='FAM' then
+      local relative = ged:identify(value)
+      if tag:match(child_code) then
+        if not relative then
+          relative = ged:newrelative(record,value,tag,
+          surname or record:surname())
+        end
+        ged:append(relative)
+        record:newchild(relative)
+      elseif tag:match(spouse_code) then 
+        local oldspouse, newspouse, husband, wife
+        husband, wife = record:husband(), record:wife()
+        if husband and wife then
+          msg:append(Error,"Can't add a third spouse to an existing family")
+        else
+          oldspouse = husband or wife
+        end
+        newspouse = relative 
+        if not newspouse then
+          newspouse = ged:newrelative(record,value,tag)
+          ged:append(newspouse)
+        end
+        record:addspouse(oldspouse,newspouse)    
+      end
     elseif not allowed[tag] then
       msg:append(Error,"Can't handle tag %s in %s",tag,record.key)
     end 
@@ -190,6 +302,7 @@ RECORD.update = function(record,entry,ged)
 end
     end  -- closure for RECORD.update
 
+--[[
 RECORD.assign = function(record,tag,data)
 print(tag)
   local top,tail = tag:match"([^.]+)%.(.*)"
@@ -199,10 +312,13 @@ print(tag)
     record[top]:assign(tail,data)
   end
 end
+--]]
 
-INDI.newrelative = function(indi,entry,tag,surname)
+GEDCOM.newrelative = function(ged,indi,entry,tag,surname)
   local msg = indi.msg or Message()
   local name = entry.NAME
+  local name_is_table = type(name)=="table"
+  if name_is_table then name=name[1] end
   if not name then
     msg:append(Error,"New relative %s in update journal for %s has no NAME",
       tag,surname)
@@ -214,11 +330,17 @@ INDI.newrelative = function(indi,entry,tag,surname)
         tag,name)
       return
     else
-      entry.NAME = name .. " /" .. surname .. "/"
+      name = name .. " /" .. surname .. "/"
+      if name_is_table then entry.NAME[1] = name
+      else entry.NAME = name 
+      end
     end
   end  
   local rec = RECORD.new(newkey("I",ged.INDI),"INDI")
-  rec:update(entry)
+  rec:update(entry,ged)
+  if not rec.SEX then
+    msg:append(Warning,"No SEX specified for %s",rec:refname())
+  end
   if not rec:birthyear() then
     rec:update{BIRT={DATE=fyear}}
   end
@@ -237,7 +359,15 @@ INDI.newrelative = function(indi,entry,tag,surname)
   msg:append("Created new %s %s %s for %s",rec.tag,rec.key,name,indi.key)
   return rec
 end 
-FAM.newrelative = INDI.newrelative 
+
+FAM.addspouse = function(fam,indi,spouse)
+  local role, partner
+  if indi.SEX.data:match"M" then role, partner = 'HUSB', 'WIFE'
+    else role, partner = 'WIFE', 'HUSB'
+  end
+  fam:append(RECORD.new(nil,role,key_format:format(indi.key)))
+  fam:append(RECORD.new(nil,partner,key_format:format(spouse.key)))  
+end
 
 INDI.newfamily = function(indi,spouse)
   msg:append("Creating new family %s x %s",indi:name(),spouse:name())
@@ -247,12 +377,7 @@ INDI.newfamily = function(indi,spouse)
   spouse:append(RECORD.new(nil,"FAMS",key_format:format(key)))
   fam.MARR = spouse.MARR
   spouse.MARR = nil
-  local role, partner
-  if indi.SEX.data:match"M" then role, partner = 'HUSB', 'WIFE'
-    else role, partner = 'WIFE', 'HUSB'
-  end
-  fam:append(RECORD.new(nil,role,key_format:format(indi.key)))
-  fam:append(RECORD.new(nil,partner,key_format:format(spouse.key)))  
+  fam:addspouse(indi,spouse)
   return fam
 end
 

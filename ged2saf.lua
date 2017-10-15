@@ -6,6 +6,8 @@
 -- functionality by adding toSAF methods to the GEDCOM, INDI, FAM, EVENT, 
 -- NOTE, PLACE and DATE tables. 
 
+-- BUGS  'x' not printed on spouse line when there is no marriage information.
+
 -- cache some routines as upvalues
 local tinsert, tunpack, tconcat = table.insert, table.unpack, table.concat
 -- Why not just `append=tinsert`? To avoid `append(t,myfunc())` failing when
@@ -262,7 +264,8 @@ INDI.toSAF = function(indi,detail,options)
   local markup = markups[options.markup]
   local omit_surname = (detail & SURNAME) == 0
   local ind = {}
-  local name = indi:name(options.capitalize,omit_surname)
+  local name = indi:name{capitalize=options.capitalize,
+    omit_surname=omit_surname,nickname='"%s"'}
   if not options.weak then name = markup.Strong(name) end
   append(ind,name)
 --  append(ind,indi:nickname(options))
@@ -276,7 +279,8 @@ if options.critic and not lifespan then append(ind,markup.Red"Datums?") end
 if options.critic and not indi.BIRT then append(ind,markup.Red"Gebore?") end
     append(ind,toSAF(indi.BIRT,options))
     append(ind,toSAF(indi.CHR,options))
-if options.critic and not indi.DEAT then append(ind,markup.Red"Oorlede?") end
+if options.critic and not indi.DEAT and indi:birthyear() and 
+  indi:birthyear()<1920 then append(ind,markup.Red"Oorlede?") end
     append(ind,toSAF(indi.DEAT,options))
     append(ind,toSAF(indi.BURI,options))
   end
@@ -287,6 +291,7 @@ if options.critic and not indi.DEAT then append(ind,markup.Red"Oorlede?") end
     if indi:female() then co = options.daughter_of
     elseif indi:male() then co = options.son_of
     end
+if not co then print("fout",indi:refname()) end
     local par = {}
 if options.critic and not father then append(par,markup.Red"Vader?") end
     append(par,toSAF(father,LIFESPAN|SURNAME,
@@ -337,10 +342,17 @@ INDI.toSAFtree = function(indi,options,prefix)
   for spouse,fam,k in indi:spouses() do
     local marriage = fam.MARR
     if marriage then
-      marriage = options.MARR:rep(k-1)..(marriage:toSAF(options) or '')
-    else 
-      marriage = options.MARR:rep(k)
+      marriage = marriage:toSAF(options)
     end
+    if marriage then marriage = options.MARR:rep(k-1)..marriage
+    else marriage = options.MARR:rep(k) 
+    end
+    local divorce = fam.DIV 
+    if divorce then
+      divorce=divorce:toSAF(options)
+if not divorce then print(-fam.DIV) end
+    end
+    if divorce then marriage = marriage.." "..divorce end
     append(tree,marriage..' '..
       spouse:toSAF(EVENTS|PARENTS|SURNAME,options,false))
     local note = toSAF(fam.NOTE,options)

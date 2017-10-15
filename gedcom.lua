@@ -6,6 +6,11 @@
 -- Look at 'help' for more information.
 -- BUGS: 
 --   Conversion from ANSI/ANSEL to UTF-8 is not supplied.
+--   Sensitive about SEX. I.e. does not warn if there is no SEX, which
+--     later causes problems when deciding on s/o, d/o, c/o. No attempt
+--     is made to deduce SEX from context.
+--   Does not give a proper message when an (illegal) attempt is made to
+--     create a new person when the nuclear link is unfinished.
 
 local help = [[
 The module returns a table, here called `gedcom`, containing:
@@ -701,8 +706,13 @@ lineno = RECORD._lineno
 RECORD.to = function(record,data)
   local pos = tagend(record.line)
   assert(pos,'line has no tag')
+  local methods = meta[record.tag] 
+  local check = methods and methods.check
+  if check then check(data) end
   record.data = data
   record.line = record.line:sub(1,pos-1) .. ' ' .. data
+  local init = record._init
+  if init then init(record) end
 end
 
 GEDCOM.message = function(ged,...)
@@ -840,10 +850,16 @@ end
 
 ------ DATE functions
 
+DATE.check = function(data)
+  if not parse_date(data) then
+    error("Improperly formed date "..tostring(data))
+  end
+end
+
 -- Adds fields to a DATE record
 DATE._init = function(date)
   if not date.data:match"%S" then return end
-date._year, date._month, date._day, date._status = parse_date(date.data) 
+  date._year, date._month, date._day, date._status = parse_date(date.data) 
   if not date._year then 
     if not date._done then date:message(date._month) end
     date._month, date._day, date._status = nil 
@@ -934,18 +950,48 @@ end
 
 local name_pattern = '^([^/]-)%s*/([^/]+)/%s*([^/]*)$'
 
-NAME.name = function(name,capitalize,omit_surname)
+NAME.check = function(data)
+  if not data or not data:match(name_pattern) then
+    error("Improperly formed name "..tostring(data))
+  end
+end
+
+NAME.name = function(name,options)
+  local nick
+  if options.nickname then
+    nick = nonblank(name.NICK and name.NICK.data)
+    if nick then 
+      nick = options.nickname:format(nick)
+    end
+  end
   local pre, surname, post = name.data:match(name_pattern)
-  if not pre then return name.data end
-  if capitalize then surname = surname:upper() end
-  if omit_surname then surname = nil end
+  if not pre then 
+    if nick then return name.data .. " "..nick
+    else return name.data
+    end
+  end
+  if options.capitalize then surname = surname:upper() end
+  if options.omit_surname then surname = nil end
   local buf = {}
-  append(buf,nonblank(pre)); append(buf,surname); append(buf,nonblank(post))
+  append(buf,nonblank(pre))
+  append(buf,nick)
+  append(buf,surname); 
+  append(buf,nonblank(post))
   return tconcat(buf,' ')
 end  
 
-INDI.name = function(indi,capitalize,omit_surname)
-  return indi.NAME and indi.NAME:name(capitalize,omit_surname)
+--- LifeLines-compatible name(), with extension to allow table-valued
+-- 'options' instead of a boolean.
+INDI.name = function(indi,capitalize,extra)
+  assert(not extra,"INDI.name no longer supports a third argument")
+  local options
+  if type(capitalize)=='table' then 
+    options = capitalize
+  else
+    options = {capitalize=capitalize}
+  end
+  local NAME = indi.NAME
+  return NAME and NAME:name(options)
 end
 
 ------------------ Constructors and maintainers ---------------------
@@ -1159,6 +1205,7 @@ INDI.deathdate = function(indi)
 end
 
 INDI.surname = function(indi)
+  if not indi.NAME then print(-indi) end
   return indi.NAME.data:match "/(.*)/"
 end
 
@@ -1187,6 +1234,9 @@ FAM.refname = function(fam)
   append(buf,wife and wife:name(true))
   return tconcat(buf," ")
 end
+
+INDI.age = function(indi)
+end  
 
 ---------- GEDCOM Toolkit functions ----------
 

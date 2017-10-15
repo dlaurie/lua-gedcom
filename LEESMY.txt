@@ -1,0 +1,57 @@
+Voorvereistes
+
+1. Jy het 'n omgewing nodig wat jou 'n terminaal gee, bv
+  (a) Linux
+  (b) Die Termux toepassing op Android (verkieslik 'n tablet)
+  (c) Die Windows Linux Shell op Windows 10
+2. Jy het die programmeertaal 'Lua' nodig. Jy kan dit in bogenoemde
+  drie omgewings kry met 
+    apt install lua
+3. Jy het die hersieningstelsel 'git' nodig. Dit het heel moontlik
+  saam met jou stelsel gekom; anders doen jy
+    apt install git
+
+Instruksies
+
+1. Gaan na die omslag waarin jou GEDCOM is.
+
+2. Skep 'n omslag "gedcom" daarin soos volg:
+
+    git clone https://github.com/dlaurie/lua-gedcom gedcom
+
+Jy sal iets sien soos:
+
+    Cloning into 'gedcom'...
+    remote: Counting objects: 42, done.
+    remote: Compressing objects: 100% (8/8), done.
+    remote: Total 42 (delta 0), reused 5 (delta 0), pack-reused 34
+    Unpacking objects: 100% (42/42), done.
+    Checking connectivity... done.
+    
+2.  Doen:
+
+    lua gedcom/GISA/maak-gisa-uit-gedcom.lua
+
+Jy sal 'n paar vrae kry.
+
+Sê jou GEDCOM se naam is 'VanBiene.ged' en die familienaam is 
+"van Biene". Gee daardie antwoorde op die regte plekke. Op die
+ou ent sal jy iets sien soos:
+
+    $ lua gedcom/GISA/maak-gisa-uit-gedcom.lua
+    Naam van GEDCOM-lêer? VanBiene
+    Reading VanBiene.ged
+    41904 lines, 32 records
+    Naam van jou korreksielêer indien enige?  []          
+    Fixing WikiTree GEDCOM: moving biographies into level 0 records
+    Familienaam van stamvader [VanBiene] van Biene
+    Die stamvader is blykbaar 	I284	Mozes VAN BIENE (1841-1887)
+    Net afstammelinge in die manlike lyn? [Jn] 
+    Generasies begin by:  [b] 
+    Wil jy jou eie prototipe verskaf [jN] 
+    VanBiene.html is uitgeskryf
+    'n Rapport oor jou GEDCOM staan in VanBiene.log
+
+
+
+

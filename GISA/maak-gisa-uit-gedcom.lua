@@ -132,12 +132,14 @@ end
 
 bywerkings = bywerkings or {}
 
+-- Die bywerkings gee dalk 'n stamvader, bv 
+--  {name="Pieter Erasmus", lifespan="1672-1731"}
 local stamvader 
 local forefather = bywerkings.forefather
 if forefather then
-  stamvader = ged:find(forefather)
-  if #stamvader == 1 then
-    stamvader = stamvader[1]
+  forefather = ged:find(forefather)
+  if #forefather == 1 then
+    stamvader = forefather[1]
   else
   print"Die bywerkings stel voor:"
   for k,v in pairs(forefather) do print(k,"'"..v.."'") end
@@ -146,6 +148,7 @@ if forefather then
   end
 end
 
+-- die "I" opsie kry egter voorrang bo alles
 if cl_opt.I then
   local sv = ged["I"..cl_opt.I]
   stamvader = sv or stamvader
@@ -187,7 +190,7 @@ function printem(ged,persone)
   print("'n Rapport oor jou GEDCOM staan in "..filename..".log")
 end
 
-local voorstel
+local voorstel = (stamvader and stamvader.key) or "I1"
 ged:update(bywerkings)
 
 function klaar()
@@ -203,7 +206,9 @@ function kinders(key)
   end
 end
 
-if not stamvader then
+--[[
+ if not stamvader then
+if false then
   local surname = prompt("Familienaam van stamvader",cl_arg[2] or surname)
   stamvader = ged:alpha(surname)
 end
@@ -214,6 +219,7 @@ if stamvader then
 else
   print"Geen stamvader gevind nie."
 end
+--]]
 
 if arg[-1]=='-i' and janee(
     "Wil jy iets met die hand doen?",

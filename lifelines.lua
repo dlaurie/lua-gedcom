@@ -59,7 +59,7 @@ local FAM = meta.FAM
 local DATE = meta.DATE
 local NAME = meta.NAME
 local EVENT = {}
-for s in ("EVENT,BIRT,CHR,DEAT,BURI,MARR"):gmatch"%u+" do
+for s in ("EVENT,BIRT,CHR,DEAT,BURI,MARR,DIV"):gmatch"%u+" do
   meta[s] = EVENT
 end
 
