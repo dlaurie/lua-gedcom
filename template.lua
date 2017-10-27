@@ -260,6 +260,7 @@ RECORD.update = function(record,entry,ged)
       if not field then 
         field = RECORD.new(nil,tag,'')
         record[tag] = field
+        record:append(field)
       end
       if type(value)=='string' then
         field:to(value)

@@ -21,6 +21,8 @@ local GEDCOM, EVENT, INDI, FAM = meta.GEDCOM, meta.EVENT, meta.INDI, meta.FAM
 meta.PLAC = meta.PLAC or {}
 meta.NOTE = meta.NOTE or {}
 meta.NAME = meta.NAME or {}
+meta.OCCU = meta.OCCU or meta.NOTE
+meta.RESI = meta.RESI or meta.NOTE
 local DATE, PLAC, NOTE = meta.DATE, meta.PLAC, meta.NOTE
 local print = print
 
@@ -43,7 +45,8 @@ default = {
   liaison = '&';
   son_of = "s/v";
   daughter_of = "d/v";
-  ABT = "c.";
+  child_of = 'k/v';
+  ABT = "ca. ";
   AFT = ">";
   BEF = "<";
   rchevron = "»";  -- old GEN2SA used this for notes
@@ -51,7 +54,6 @@ default = {
   AND = " en ";    -- ' and ', including spaces
   indi_sep = " ";  -- between events in an individual
   co_sep = ";";    -- after last event if there is a child-of clause
-  tab = "\t";      -- between De Villiers code and name
   note = ". ";  -- between events and note of individual
 --    dates
   DMY = "%d.%02d.%04d";
@@ -160,7 +162,7 @@ html = {
 
   fullDeV = function(s)
     if not nonblank(s) then return end
-    return "<strike>" .. s .. "</strike>" 
+    return "<span class=blind>" .. s .. "</span>" 
   end;
 
   Red = function(s)
@@ -184,14 +186,16 @@ html = {
     return "<code>" .. s .. "</code>"
   end;
 
-  Tab = "⭾";
+  Tab = "&#9;";
 
 -- newlines in the following two functions have no effect, 
 -- but are very useful to humans that wish to read the HTML code
   NewLine = "</br>\n";
 
-  Person = function(s)
-    return "<p>" .. s .. "</p>\n\n"
+  Person = function(s,class)
+    if class then return ("<p class=%s>%s</p>\n\n"):format(class,s)
+    else return "<p>" .. s .. "</p>\n\n"
+    end
   end;
 
   Wrap = function(s)
@@ -203,6 +207,11 @@ html = {
     local TITLE = "%$TITLE%$"
     document = document:gsub(TITLE,title)
   end;
+
+  Span = function(s,class)
+    return ("<span class=%s>%s</span>"):format(class,s)
+  end
+
 }
 
 local markups = {plain=plain, html=html, markdown=markdown}
@@ -247,7 +256,11 @@ end
 NOTE.toSAF = function(note,options)
   local markup = markups[options.markup]
   if not nonblank(note.data) then return end  
-  return markup.Emph(note.data:match"^[^\n]*")
+  local data = note.data:match"^[^\n]*" -- only first line used
+--  if note.prev and note.prev.tag == 'INDI' then 
+--    data = "("..data..")"     -- put parentheses around a personal note
+--  end
+  return markup.Emph(data)
 end
 
 --- indi:toSAF(detail,options)
@@ -265,7 +278,7 @@ INDI.toSAF = function(indi,detail,options)
   local omit_surname = (detail & SURNAME) == 0
   local ind = {}
   local name = indi:name{capitalize=options.capitalize,
-    omit_surname=omit_surname,nickname='"%s"'}
+    omit_surname=omit_surname,nickname='"%s"'}:gsub("Anonymous","Pn")
   if not options.weak then name = markup.Strong(name) end
   append(ind,name)
 --  append(ind,indi:nickname(options))
@@ -281,6 +294,8 @@ if options.critic and not indi.BIRT then append(ind,markup.Red"Gebore?") end
     append(ind,toSAF(indi.CHR,options))
 if options.critic and not indi.DEAT and indi:birthyear() and 
   indi:birthyear()<1920 then append(ind,markup.Red"Oorlede?") end
+    append(ind,toSAF(indi.OCCU,options))
+    append(ind,toSAF(indi.RESI,options))
     append(ind,toSAF(indi.DEAT,options))
     append(ind,toSAF(indi.BURI,options))
   end
@@ -290,8 +305,8 @@ if options.critic and not indi.DEAT and indi:birthyear() and
     local co = options.child_of
     if indi:female() then co = options.daughter_of
     elseif indi:male() then co = options.son_of
+    elseif options.critic then append(ind,Red"Geslag?")
     end
-if not co then print("fout",indi:refname()) end
     local par = {}
 if options.critic and not father then append(par,markup.Red"Vader?") end
     append(par,toSAF(father,LIFESPAN|SURNAME,
@@ -306,7 +321,7 @@ if options.critic and not mother then append(par,markup.Red"Moeder?") end
   end
   local note = toSAF(indi.NOTE,options)
   if note then 
-    return ind .. options.note .. note
+    return ind .. options.note .. note .. options.note
   else
     return ind
   end
@@ -325,14 +340,16 @@ INDI.toSAFtree = function(indi,options,prefix)
   options = default:setoptions(options)
   local markup = markups[options.markup]
   local detail 
+  local class
   local tree = {}
   local fprefix, generation
   if prefix then --- this is a descendant
     detail = EVENTS
-    fprefix = GISAprefix(prefix,markup)..options.tab
+    fprefix = GISAprefix(prefix,markup)
     generation = prefix:match"(%l)%d+$"    
     generation = string.char(generation:byte()+1)
   else --- this is the stamvader
+    class="stamvader"
     detail = EVENTS | SURNAME | PARENTS
     fprefix = ''
     prefix = ''
@@ -347,6 +364,7 @@ INDI.toSAFtree = function(indi,options,prefix)
     if marriage then marriage = options.MARR:rep(k-1)..marriage
     else marriage = options.MARR:rep(k) 
     end
+    if class ~= "stamvader" then marriage = markup.Tab..marriage end
     local divorce = fam.DIV 
     if divorce then
       divorce=divorce:toSAF(options)
@@ -355,10 +373,12 @@ if not divorce then print(-fam.DIV) end
     if divorce then marriage = marriage.." "..divorce end
     append(tree,marriage..' '..
       spouse:toSAF(EVENTS|PARENTS|SURNAME,options,false))
-    local note = toSAF(fam.NOTE,options)
+    local note = toSAF(fam.RESI,options)
+    if note then append(tree,note) end
+    note = toSAF(fam.NOTE,options)
     if note then append(tree,note) end
   end
-  tree = {markup.Person(tconcat(tree,markup.NewLine))}
+  tree = {markup.Person(tconcat(tree,markup.NewLine),class)}
   if indi:male() or not options.maleline then
     for child,j in indi:children() do
       if prefix=='' then
@@ -394,11 +414,11 @@ GEDCOM.toSAF = function(ged,root,options)
      if indi.prev ~= ged then 
        msg:append("%s is not in the universe",indi:refname())
      end     
-     append(saf,markup.Header(1,indi:surname():upper()))
+     append(saf,markup.Header(1,indi:name():upper()))
      append(saf,indi:toSAFtree(options))
   end
   if markup.SetTitle then 
-    markup:SetTitle(root[1]:surname():upper()) 
+    markup:SetTitle(root[1]:name():upper()) 
   end
   return markup.Wrap(tconcat(saf,markup.Page)), msg
 end
@@ -413,13 +433,14 @@ html.document = [[
 	<title>$TITLE$</title>
 	<style type="text/css">
 		@page { margin-left: 1cm; margin-right: 1cm; margin-top: 1cm; margin-bottom: 1.91cm }
-		p { margin-left: 1.27cm; text-indent: -1.27cm; margin-bottom: 0.25cm; direction: ltr; line-height: 120%; text-align: left; page-break-inside: avoid; orphans: 2; widows: 2 }
+		p { margin-left: 1.27cm; text-indent: -1.27cm; margin-bottom: 0.14cm; direction: ltr; line-height: 105%; text-align: left; page-break-inside: avoid; orphans: 2; widows: 2; so-language: af-ZA }
                 p { font-family: "Calibri", "Carlito"; font-size: 11pt }
+                p.stamvader {  margin-left: 0cm; text-indent: 0cm; }
                 b { font-family: "Calibri", "Carlito"; font-size: 11pt }
-		h1 { margin-left: 1.27cm; text-indent: -1.27cm; margin-bottom: 0.11cm; direction: ltr; line-height: 105%; text-align: left; page-break-inside: avoid; orphans: 2; widows: 2 }
-		h1{ font-family: "Cambria", serif; font-size: 16pt; so-language: af-ZA }
+		h1 { margin-left: 0cm; text-indent: 0cm; margin-top: 0cm; margin-bottom: 0.14cm; direction: ltr; line-height: 105%; text-align: left; page-break-inside: avoid; orphans: 2; widows: 2 }
+		h1{ font-family: "Cambria", serif; font-size: 14pt; so-language: af-ZA }
 		h2{ font-family: "Calibri", "Carlito"; font-size: 13pt; so-language: af-ZA }
-                strike { color: #ffffff; font-size: 0.01pt; margin-right: 0.87cm}
+                .blind { font-family: "serif"; color: #ffffff; font-size: 1pt; margin-right: 0.87cm}
 	</style>
 </head>
 <body lang="af-ZA" dir="ltr">
@@ -473,14 +494,15 @@ translate = t
     end
 
 PLAC.toSAF = function(place,options)
+  if not nonblank(place.data) then return end
   local required=edit.province_required
   place = place.data
   for country in pairs(edit.delete_country) do
-    place = place:gsub(",?%s*%[?"..country.."%]?","")
+    place = place:gsub(",%s*%[?"..country.."%]?","")
   end  
   for _,province in ipairs(edit.delete_province) do 
     if not required[province] then
-      place = place:gsub(",?%s*"..province,"")
+      place = place:gsub(",%s*"..province,"")
     end
   end  
   for source,target in pairs(translate) do

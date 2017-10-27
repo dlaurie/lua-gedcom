@@ -17,10 +17,13 @@ The module returns a table, here called `gedcom`, containing:
   `help` This help string.
   'new`  A function which constructs an empty GEDCOM container and optionally 
    initializes custom fields.
-  `read` A function which reads a GEDCOM file into a new container, here 
-    called `ged`, and returns a message, here called `msg`, suitable for 
-    writing to a log file. If construction failed, `ged` is nil and `msg` 
-    gives the reason for failure.
+  `open` A function which returns a file-like object with methods `read`
+    and `close`, rather like `io.open` except that the `read` method returns
+    a Level 0 GEDCOM record.
+  `read` A function which uses `open` and `new` to read a GEDCOM file into 
+    a new container, here called `ged`, and returns a message, here called 
+    `msg`, suitable for writing to a log file. If construction failed, 
+    `ged` is nil and `msg` gives the reason for failure.
   `meta` The metatables of GEDCOM-related objects: GEDCOM, RECORD, MESSAGE 
     and tag-specified metatables like INDI, FAM and DATE. 
   `glob` A few non-member functions that might be useful outside this file.
@@ -36,6 +39,9 @@ lines in your application:
 
     gedcom = require "gedcom"
     ged, msg = gedcom.read(GEDFILE) 
+
+`gedcom.open` and `gedcom.new` are lower-level components, usually not called
+directly by the user.
 
 GEDCOM lines are parsed according to the rule that each line must have a level 
 number, may have a key, must have a tag, and must have data (but the data may 
@@ -265,13 +271,30 @@ local function nonblank(s)
   return nil
 end
 
--- extract date as three numbers and a modifier
     do
 local _status = {AFT="AFT",BEF="BEF",ABT="ABT",EST="EST",CAL="CAL",
-   FR="FR",TO="TO"}
+   FR="FR",TO="TO",C="ABT",FROM="FR",BET="FR",AND="TO",VOOR="BEF"}
 local _month = {JAN=1,FEB=2,MAR=3,APR=4,MAY=5,JUN=6,JUL=7,AUG=8,SEP=9,
    OCT=10,NOV=11,DEC=12}
-parse_date = function(data)
+--- input: 
+--   data   string    (normally the `data` on a DATE line)
+--   lax    number    progressively relax strictness
+--      lax = 0   strict GEDCOM with case-insensitve English month names
+--      lax = 1   also allow some synonyms for qualifiers and month names
+--      lax = 2   also allow digits-only dates with separators
+--      lax = 3   also allow YYYYMMDD without separators
+--      lax = 4   if all else fails, the first four-year sequence of digits
+--                is taken for 'year'
+-- output: one of:
+--   nil, message
+--   year, month, day, status, later  with at least year non-nil
+-- The output parameters are of type number, number, number, string, table.
+-- If present, later.year, later.month, later.day and later.status have the
+-- obvious meanings for a second date besides the main date, and
+-- later.timespan combines the years from both dates into a string like
+-- "1652-1688".
+
+parse_date = function(data,lax)
   if type(data)=='table' then data = data.data end
   assert(type(data)=='string',
     'Bad argument #1 to parse_date: expected string, got '..type(data))
@@ -304,7 +327,12 @@ parse_date = function(data)
   if day and not month and not year then
     return day, nil, nil, status
   end
-  if year and not (day and not month) and not word() then    
+  if not year then
+    year = data:match"%d%d%d%d"
+    if year then status = _status.ABT end
+  end
+--- and not word() TODO
+  if year and not (day and not month) then    
     return year, month, day, status
   else
     return nil,("Nonstandard date format: %s"):format(data)
@@ -333,10 +361,11 @@ local gedcom_new = function(tbl)
   return ged
 end
 
---- constructs a GEDCOM container and reads a GEDCOM file into it.
--- This is deliberately not a GEDCOM method: you can only read a GEDCOM
--- file into a new GEDCOM container.
-local gedcom_read = function(filename)
+--- Opens a GEDCOM file to be read record by record.
+-- Returns a file-like object with 'read' and 'close' methods.
+-- 'ged' is an optional GEDCOM container, to be inserted as the 'prev'
+-- field in each record.
+local gedcom_open = function(filename,ged)
   local gedfile, errmsg
   if type(filename)~='string' then 
     return nil,"gedcom.read: expected filename, got "..type(filename)
@@ -349,15 +378,26 @@ local gedcom_read = function(filename)
     end
   end
   if not gedfile then return nil, errmsg end
--- we now have a freshly-opened gedfile
+  local rdr = reader(gedfile);
+  return {
+    read = function() return Record(rdr,0,ged) end;
+    close = function() gedfile:close() end;
+  }
+end  
+
+--- constructs a GEDCOM container and reads a GEDCOM file into it.
+-- This is deliberately a constructor and not a GEDCOM method: you can't 
+-- read a GEDCOM file into an old GEDCOM container.
+local gedcom_read = function(filename)
   local ged = gedcom_new{filename=filename}
   local msg = ged.msg 
+  local gedfile, errmsg = gedcom_open(filename,ged)
+  if not gedfile then return nil, errmsg end
+-- we now have a freshly-opened gedfile
   msg:append("Reading %s",filename)
-  local rdr = reader(gedfile)
-  repeat
-    local rec = Record(rdr,0,ged) 
+  for rec in gedfile.read do
     ged:append(rec)
-  until not rec
+  end
   msg:append("%s bytes, %s lines, %s records, %s individuals, %s families",
     ged[#ged].pos + #ged[#ged].line,
     ged[#ged].count + ged[#ged].size - 1,
@@ -391,6 +431,24 @@ GEDCOM.__index = function(ged,idx)
 end
 
 -- methods of a GEDCOM container
+
+local function dolines(ged,func)
+  func(ged.line)
+  for _,record in ipairs(ged) do
+    dolines(record,func)
+  end
+end
+GEDCOM.dolines = dolines
+RECORD.dolines = dolines
+
+local function traverse(ged,func)
+  func(ged)
+  for _,record in ipairs(ged) do
+    traverse(record,func)
+  end
+end
+GEDCOM.traverse = traverse
+RECORD.traverse = traverse
 
 --- Append a record to a GEDCOM container
 GEDCOM.append = function(ged,rec)
@@ -543,7 +601,7 @@ GEDCOM.build = function(ged,tag,rectag)
   return index,duplicates
 end 
 
---- object, message = Record(rdr,base)
+--- object, message = Record(rdr,base,prev)
 --  Reads one GEDCOM object at level `base`, getting its input from the
 --  reader `rdr` (see `reader`). One return value may be nil, but not both.
 Record = function(rdr,base,prev)
@@ -720,8 +778,11 @@ GEDCOM.message = function(ged,...)
 end 
 
 RECORD.message = function(record,...)
-  assert(record.prev)
-  record.prev:message((record.key or record.tag),...)
+  if record.prev then
+    record.prev:message((record.key or record.tag),...)
+  else
+    print(tconcat({(record.key or record.tag),...},' '))
+  end
 end
 
 --- Undocumented feature: `-ged.HEAD` etc puts together a record or message.
@@ -850,6 +911,17 @@ end
 
 ------ DATE functions
 
+--- A DATE record has up to five fields.
+-- _status, _year, _month, _day, _later
+-- _status: one of ABT,CAL,EST,AFT,BEF
+-- _year, _month, _day: integers
+-- _later: another table with similar fields status, year, month, day
+--    Used for a later date when the true date falls in a certain timespan,
+--    and also to delimit a period. In the latter case, the field 'timespan'
+--    is set to a string like "1861-1892".
+-- For more detail, see the cooments to the function `parse_date` which is 
+-- exported as `gedcom.glob.date`.
+
 DATE.check = function(data)
   if not parse_date(data) then
     error("Improperly formed date "..tostring(data))
@@ -859,7 +931,8 @@ end
 -- Adds fields to a DATE record
 DATE._init = function(date)
   if not date.data:match"%S" then return end
-  date._year, date._month, date._day, date._status = parse_date(date.data) 
+  date._year, date._month, date._day, date._status, date_later = 
+    parse_date(date.data) 
   if not date._year then 
     if not date._done then date:message(date._month) end
     date._month, date._day, date._status = nil 
@@ -1413,5 +1486,5 @@ setmetatable(_ENV,{__newindex=function(ENV,key,value)
 -- Errors in the data are reported in a different way.
 --]]
 
-return { read=gedcom_read, new=gedcom_new, util=util, help=help, 
-  meta=meta, glob=glob }
+return { open=gedcom_open, read=gedcom_read, new=gedcom_new, 
+  util=util, help=help, meta=meta, glob=glob }

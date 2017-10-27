@@ -150,7 +150,7 @@ end
 
 -- die "I" opsie kry egter voorrang bo alles
 if cl_opt.I then
-  local sv = ged["I"..cl_opt.I]
+  local sv = ged[cl_opt.I]
   stamvader = sv or stamvader
 end
 
@@ -191,6 +191,7 @@ function printem(ged,persone)
 end
 
 local voorstel = (stamvader and stamvader.key) or "I1"
+stamvader = stamvader or ged[voorstel]
 ged:update(bywerkings)
 
 function klaar()
@@ -206,7 +207,7 @@ function kinders(key)
   end
 end
 
---[[
+--[[  Moet wel vir stamvader vra as -i gespesifiseer is
  if not stamvader then
 if false then
   local surname = prompt("Familienaam van stamvader",cl_arg[2] or surname)
