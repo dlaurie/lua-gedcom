@@ -14,6 +14,9 @@ default: Laurie-477-gisa.html
 %-stamboom.txt: %-descendants.luax
 	lua maak-gisa.lua $* almal
 
+%.ged: %.saf gedcom/saftxt.lua
+	lua gedcom/saftxt.lua $*.saf 
+
 %.html: %.txt gisa.css gisa.lua 
 	pandoc --template=gisa-template.html -H gisa.css $*.txt -o $*.html -t gisa.lua
 
@@ -29,3 +32,8 @@ default: Laurie-477-gisa.html
 %.pdf: %.docx
 	libreoffice --convert-to pdf:writer_pdf_Export $*.docx 2> /dev/null
 
+TDLawrie.html: TDLawrie.ged
+	lua maak-gisa-uit-gedcom.lua TDLawrie Lawrie -Ia -y
+
+JLangenegger.html: JLangenegger.ged
+	lua maak-gisa-uit-gedcom.lua JLangenegger Langenegger -Ia -y

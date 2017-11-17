@@ -11,6 +11,8 @@
 --     is made to deduce SEX from context.
 --   Does not give a proper message when an (illegal) attempt is made to
 --     create a new person when the nuclear link is unfinished.
+--   The INDI metamethods are in the RECORD table because metamethod access
+--     is raw. There should be a neater solution.
 
 local help = [[
 The module returns a table, here called `gedcom`, containing:
@@ -785,10 +787,27 @@ RECORD.message = function(record,...)
   end
 end
 
---- Undocumented feature: `-ged.HEAD` etc puts together a record or message.
+--- Undocumented feature: record metamethods
+
+-- `-ged.HEAD` etc puts together a record or message.
 -- Not a whole GEDCOM.
 RECORD.__unm = assemble
 MESSAGE.__unm = assemble
+
+-- metamethods for ~ + - to be supplied per tag
+local metamethod = function(name)
+  return function(record,...)
+    local mmt = meta[record.tag]
+    local mm = assert(mmt and mmt[name],"No metamethod "..name..
+      " defined for "..record.tag)
+    return mm(record,...)
+  end
+end
+
+for mm in ("bnot,add,sub"):gmatch"%l+" do
+  mm = '__'..mm
+  RECORD[mm] = metamethod(mm)
+end
 
 --- define forward-declared utilities
 
@@ -1164,6 +1183,22 @@ FAM.member = function(fam,key)
   end
 end
 
+-- ancestor by the Ahnentafel numbering
+INDI.ancestor = function(indi,ahne)
+  assert(ahne>0)
+  if ahne==1 then return(indi) end
+  local ancestor = indi:ancestor(ahne//2)
+  if not ancestor then return nil
+  elseif ahne%2==0 then return ancestor:father()
+  else return ancestor:mother()
+  end
+end
+
+INDI.child = function(indi,num)
+  local children = indi:children"table"
+  return children[num]
+end
+  
 INDI.sex = function(indi)
   return indi.SEX and indi.SEX.data
 end
@@ -1458,6 +1493,11 @@ local metamethods = function(object)
   tsort(meth)
   return tconcat(meth," ")
 end
+
+-- define indi+n, indi-n, ~indi
+INDI.__add = INDI.ancestor
+INDI.__bnot = INDI.refname
+INDI.__sub = INDI.child
 
 -- Export the utilities and metatables. 
 local util = {reader=reader, Record=Record, level=level, tagdata=tagdata, 

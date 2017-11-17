@@ -21,8 +21,10 @@ local GEDCOM, EVENT, INDI, FAM = meta.GEDCOM, meta.EVENT, meta.INDI, meta.FAM
 meta.PLAC = meta.PLAC or {}
 meta.NOTE = meta.NOTE or {}
 meta.NAME = meta.NAME or {}
+meta.AGE = meta.AGE or {}
 meta.OCCU = meta.OCCU or meta.NOTE
 meta.RESI = meta.RESI or meta.NOTE
+meta.BURI = meta.BURI or meta.NOTE
 local DATE, PLAC, NOTE = meta.DATE, meta.PLAC, meta.NOTE
 local print = print
 
@@ -54,7 +56,7 @@ default = {
   AND = " en ";    -- ' and ', including spaces
   indi_sep = " ";  -- between events in an individual
   co_sep = ";";    -- after last event if there is a child-of clause
-  note = ". ";  -- between events and note of individual
+  note = "; ";  -- between events and note of individual
 --    dates
   DMY = "%d.%02d.%04d";
   dMY = "-.%02d.%04d";
@@ -64,6 +66,7 @@ default = {
   YMD = "%dj%02dm%dd";
   YMd =  "%j%02d";
   Ymd =  "%j";
+  nodate = "-";  -- if PLAC but no DATE in MARR
 -- constants used for detail selection
   LIFESPAN = 0x1;
   EVENTS = 0x2; 
@@ -217,7 +220,14 @@ html = {
 local markups = {plain=plain, html=html, markdown=markdown}
 
 local function toSAF(object,...)
-  if object and object.toSAF then return object:toSAF(...) end
+  if not object then return end
+  return object.toSAF and object:toSAF(...)
+end
+
+meta.AGE.toSAF = function(age,options)
+  if nonblank(age.data) then
+    return ("(%s)"):format(age.data)
+  end
 end
 
 DATE.toSAF = function(date,options)
@@ -241,16 +251,26 @@ end
 
 EVENT.toSAF = function(event,options)
   options = default:setoptions(options)
+  local place = event.PLAC and event.PLAC:toSAF(options)
+  local date = event.DATE and event.DATE:toSAF(options)
   local ev = {}
   append(ev,options[event.tag] or "?")
   local color = html.Green
   if not event.PLAC and not event.DATE then color = html.Red end
 if options.critic and not event.PLAC then append(ev,color("Waar?")) end
-  append(ev,event.PLAC and event.PLAC:toSAF(options))
+  append(ev,place)
 if options.critic and not event.DATE then append(ev,color("Wanneer?")) end
-  append(ev,event.DATE and event.DATE:toSAF(options))
+  append(ev,date)
+  if place and not date and event.tag=="MARR" then 
+    append(ev,options.nodate) 
+  end
+  append(ev,event.AGE and event.AGE:toSAF(options))
   append(ev,event.NOTE and event.NOTE:toSAF(options))
-  if #ev>1 then return tconcat(ev," ") end   
+  if #ev==1 and event.data:match"%S" then
+    ev[2] = event.data
+  end   
+  if #ev>1 then return tconcat(ev," ") 
+  end
 end
 
 NOTE.toSAF = function(note,options)
@@ -321,10 +341,10 @@ if options.critic and not mother then append(par,markup.Red"Moeder?") end
   end
   local note = toSAF(indi.NOTE,options)
   if note then 
-    return ind .. options.note .. note .. options.note
-  else
-    return ind
+    ind = ind .. options.note .. note
   end
+  if not ind:match"%.$" then ind = ind .. "." end
+  return ind
 end
 
 local GISAprefix = function(prefix,markup)  
@@ -379,7 +399,9 @@ if not divorce then print(-fam.DIV) end
     if note then append(tree,note) end
   end
   tree = {markup.Person(tconcat(tree,markup.NewLine),class)}
-  if indi:male() or not options.maleline then
+-- using "not indi:female()" rather than "indi:male()" to cope with
+-- GEDCOMs where SEX is by default male
+  if not indi:female() or not options.maleline then
     for child,j in indi:children() do
       if prefix=='' then
         append(tree,markup.Header(2,generation..j))
@@ -455,6 +477,7 @@ delete_country = "South Africa,Suid-Afrika,Suid Afrika",
 delete_province = "Cape Province,Kaapprovinsie,Natal,Transvaal,Oranje-Vrystaat"
   ..",Cape Colony,Cape of Good Hope,Orange Free State,OFS"
   ..",Free State,Vrystaat,Gauteng,Western Cape"
+  ..",Eastern Cape"
 }
 for k,csv in pairs(edit) do
   local list = {}

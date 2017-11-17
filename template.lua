@@ -104,7 +104,7 @@ local evtype = {['*']="BIRT",["~"]="CHR",["%"]="DIV",["+"]="DEAT",
 INDI.fromSAF = function(saf)
 -- ASCII substitutes for multibyte symbols
   local tp = {}
-  saf = saf:gsub("†","+"):gsub("≈","~"):gsub("÷","%"); 
+  saf = saf:gsub("†","+"):gsub("≈","~"):gsub("÷","%"):gsub("»","!"); 
 -- one clause
   local function fromSAF(clause)
     local datestart, date, datestop = 
@@ -118,14 +118,16 @@ INDI.fromSAF = function(saf)
       local evt,place = clause:sub(1,datestart-1):match"([*~+%#])%s+(.*)"
       local note,term,endnote = clause:sub(datestop):match"([^.]*)(%.?)%s*(.*)"
       evt = evtype[evt]
-      tp[evt] = {DATE=DATE.fromSAF(date),PLAC=place,NOTE=nonblank(note)}
-      tp.NOTE = tp.NOTE or nonblank(endnote)
+      if evt then
+        tp[evt] = {DATE=DATE.fromSAF(date),PLAC=place,NOTE=nonblank(note)}
+        tp.NOTE = tp.NOTE or nonblank(endnote)
+      end
     elseif name then  -- This is a name.
       pre, post = clause:sub(1,pre-1), clause:sub(post)
       name = NAME.fromSAF(name)
       tp.NAME = pre.."/"..name.."/"..post
     else
-      print(clause)
+      print("Could not handle", clause)
     end
   end
   local start = 1
