@@ -746,8 +746,8 @@ RECORD.to_gedcom = function(item,file,options,template)
   end
 end
 
-RECORD._tags = function(RECORD)
-  if record.prev._tags then
+RECORD._tags = function(record)
+  if record.prev and record.prev._tags then
     return record.prev:_tags() .. "." .. record.tag
   else return record.tag
   end
@@ -755,7 +755,7 @@ end
 tags = RECORD._tags
 
 RECORD._lineno = function(record)
-  if record.prev._lineno then
+  if record.prev and record.prev._lineno then
     return record.prev:_lineno() + record.count 
   else return record.count
   end

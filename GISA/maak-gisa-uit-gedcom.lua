@@ -162,6 +162,7 @@ end
 opsie = {}
 
 function printem(ged,persone)
+  if type(persone) == 'string' then persone = ged[persone] end
   local outname = filename..".html"
   local outfile,msg = io.open(outname,"w")
   if cl_opt.C then opsie.critic = true end
@@ -190,9 +191,26 @@ function printem(ged,persone)
   print("'n Rapport oor jou GEDCOM staan in "..filename..".log")
 end
 
+ged:update(bywerkings)
+
 local voorstel = (stamvader and stamvader.key) or "I1"
 stamvader = stamvader or ged[voorstel]
-ged:update(bywerkings)
+if not stamvader then
+  stamvader = ged:alpha(surname)
+  if not stamvader then
+    surname = prompt("Familienaam van stamvader",cl_arg[2] or surname)
+    stamvader = ged:alpha(surname)
+  end
+end
+
+if stamvader then 
+  print("Stamvader: "..stamvader:refname())
+else
+  print "Geen stamvader is gevind nie"
+  exit(-1)
+end
+
+voorstel = voorstel or stamvader.key
 
 function klaar()
   local persone = prompt(
@@ -231,7 +249,7 @@ if arg[-1]=='-i' and janee(
   end
   print("Tik 'klaar()' as jy weet watter kodes die verlangde stamvaders het.")
 else  
-  if stamvader then printem(ged,voorstel) end
+  printem(ged,voorstel) 
 end
 
 --[[

@@ -3,18 +3,19 @@ Read and surf GEDCOM files in Lua.
 
 ## Quick start
 
-1. Copy `gedcom.lua` and `lifelines.lua` into a directory named `gedcom` in your Lua module path.  
+1. Copy `gedcom.lua`, `lifelines.lua` and `template.lua` into a directory named `gedcom` in your Lua module path.  
 2. From the directory in which you keep GEDFILE.ged, start up Lua 5.3 (maybe Lua 5.2 is also OK, but all development work has been in 5.3).
 
 You can then try this:
 
     gedcom = require "gedcom.gedcom"
+    require "gedcom.template"
     ged, readerr = gedcom.read "GEDFILE.ged"
     msg = ged:validate()
 
 You will first get two lines reporting what it read (if not, type `readerr` to see what went wrong), and then a list of messages about things considered to be errors in GEDFILE.ged. These messages are also kept in `msg`.
 
-For example, if your file was exported by WIkiTree you will probably get something like this:
+For example, if your file was exported by WikiTree you will probably get something like this:
 
        9:  Tag HEAD.COPR ignored and its subrecords skipped
       19:  Tag INDI.NAME.GIVN ignored and its subrecords skipped
@@ -56,16 +57,15 @@ You can retrieve information from your file by expressions like:
     ged.I10.NAME      -- the first subrecord with tag NAME in I10
     ged.I10.NAME.data -- the data part of the first NAME line
 
-The main thrust of the package is reading GECDOM files (this may change
-in the future) but primitive editing is possible. For example:
+The main thrust of the package is reading GECDOM files but primitive editing is possible. For example:
 
     ged.I10.BIRT.DATE:to"23 Dec 1822"
 
-You could instead assign `"23 Dec 1822"` to `ged.I10.BIRT.DATE.data`. 
-The change will then be local to your session: if you do a `ged:write`,
-the original line will be unchanged.
+If instead of using `to`, you write 
 
+    `ged.I10.BIRT.DATE.data="23 Dec 1822"` 
 
+the change will be local to your session: if you do a `ged:write`, the original line will be unchanged.
 
 If you are tolerably familiar with the LifeLines report language, you will be glad to hear that you can retrieve information by expressions like:
 
@@ -91,11 +91,7 @@ Only a selection of the more common LifeLines functions is provided in this way.
 
 `GEDCOM`, `FAM` and `INDI` are the names of method tables not visible without effort. You do not need them explicitly, since object-oriented calls like `ged:fam(key)` or `fam:children()` do the job neatly.
 
-In the spirit of LifeLines, but not actually in it, is
-
-    INDI.refname = function(indi)
-
-This gives you full names with lifespan, which may very well be unique (at least for deceased individuals) in your database.    
+In the spirit of LifeLines, but not actually in it, is `INDI.refname`, which gives you a full name with lifespan in brackets. This usually is unique (at least for deceased individuals) in your database. 
 
 Less-used LifeLines functions can be added by:
 
@@ -114,7 +110,7 @@ Oh, and do not expect much from the currently available examples. The package ha
 ## Uitvoer na GISA se formaat
 
 1. Kopieer die `GISA` omslag van hierdie pakket met al sy inhoud na jou eie gebruikerspasie. 
-2. Maak 'n `gedcom` omslag binne hom en kopieer die `.lua`-lêers in die hoofgedeelte van hierdie pakket, soontoe.
+2. Maak 'n `gedcom` omslag binne hom en skuif die `.lua`-lêers in die hoofgedeelte van hierdie pakket, soontoe.
 3. Kopieer jou eie GEDCOM-lêer ook na die `GISA` omslag.
 
 Die inhoud behoort iets van hierdie aard te lyk:
@@ -153,11 +149,12 @@ en druk net elke keer `Enter`. Jy sal iets sien soos:
     Het jy 'n lêer met voorkeure? [jN]
     Die stamvader is dalk	I1	Adam VAN EEDEN 
     Net afstammelinge in die manlike lyn? [Jn]
-    GISA-teksformaat staan op GEDFILE.txt. Dit moet met 'n ander program omgeskakel word na GISA-dokumentformaat.
+    GEDFILE.html is uitgeskryf 
     
-Die lêer `GEDFILE.txt` is in "Markdown"-formaat. As jy al die regte sagteware op jou rekenaar het (wat op hierdie stadium waarskynlik beteken jy werk soos ek op die een of ander variasie van Linux), kan jy dan intik:
+Die lêer `GEDFILE.html` is geskik om net so in jou woordverwerker ingetrek te word. Jy kan dit dan as `GEDFILE.docx` bêre of na `GEDFILE.pdf` uitvoer.
 
-    make GEDFILE.html
+'n Meer outomatiese opsie, as jy LibreOffice en GNU-Make het, is:
+
     make GEDFILE.docx
     make GEDFILE.pdf
 

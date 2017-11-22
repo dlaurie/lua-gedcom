@@ -419,7 +419,8 @@ the record itself.
 
 local event = {
   DATE = parse_date,
-  PLAC = true
+  PLAC = true,
+  AGE = true,
 } 
 
 local description = {}
@@ -466,6 +467,8 @@ GEDCOM.template = {
       NICK = true };
     SEX = any_of'M F N',
     BIRT = event,
+    OCCU = true,
+    RESI = true,
     DEAT = event,
     CHR = event,
     BURI = event,

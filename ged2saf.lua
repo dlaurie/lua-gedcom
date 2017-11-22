@@ -415,7 +415,8 @@ end
 --- ged:toSAF(root,options)
 -- root: a single INDI or a collection
 GEDCOM.toSAF = function(ged,root,options)
-  if not root then return end
+  assert (root and (root=='INDI' or root[1]),  
+    "\nGEDCOM.toSAF expects a single INDI or a collection with at least one INDI")    
   options = options or {}
   options = default:setoptions(options)
   if options.html then 
